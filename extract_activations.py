@@ -29,7 +29,7 @@ import yaml
 from data.loading import load_enron, load_sms
 from data.filtering import filter_by_logit_confidence, save_filtered_indices
 from data.splitting import make_splits, save_splits
-from extraction.extractor import extract_and_cache, _sanitize_model_name
+from extraction.extractor import extract_and_cache, _sanitize_model_name, get_device, get_dtype, empty_cache
 from extraction.modified_extractor import extract_prompted, extract_followup
 
 
@@ -73,14 +73,22 @@ def run_extraction(config: dict, model_name: str, dataset_name: str,
     filter_indices_path = cache_path / "filtered_indices.json"
 
     if not skip_filtering and not filter_indices_path.exists():
-        print("Running logit-difference filtering (requires GPU)...")
+        print("Running logit-difference filtering (requires GPU/MPS)...")
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        device = get_device()
+        dtype = get_dtype(device)
+
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.bfloat16, device_map="auto"
-        )
+        if device.type == "mps":
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, torch_dtype=dtype
+            ).to(device)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, torch_dtype=dtype, device_map="auto"
+            )
 
         threshold = config["filtering"]["logit_diff_threshold"]
         dataset, _ = filter_by_logit_confidence(
@@ -95,7 +103,7 @@ def run_extraction(config: dict, model_name: str, dataset_name: str,
 
         # Free the model — we'll reload it in extraction with hooks
         del model
-        torch.cuda.empty_cache()
+        empty_cache()
 
         print(f"  {len(texts)} samples after filtering")
     else:

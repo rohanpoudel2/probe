@@ -13,6 +13,30 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
+def get_device():
+    """Pick the best available device: CUDA > MPS > CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def get_dtype(device: torch.device):
+    """Pick a safe dtype for the device. MPS doesn't support bfloat16."""
+    if device.type == "mps":
+        return torch.float32
+    return torch.bfloat16
+
+
+def empty_cache():
+    """Free accelerator memory if available."""
+    if torch.cuda.is_available():
+        empty_cache()
+    elif torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
 def _sanitize_model_name(name: str) -> str:
     """Convert model name to filesystem-safe string."""
     return name.replace("/", "_")
@@ -31,7 +55,6 @@ def extract_and_cache(
     dataset_name: str,
     batch_size: int = 16,
     max_length: int = 512,
-    dtype=torch.bfloat16,
 ):
     """Extract hidden-state activations and save to disk.
 
@@ -47,7 +70,6 @@ def extract_and_cache(
         dataset_name: Name for this dataset (used in cache path).
         batch_size: Batch size for forward passes.
         max_length: Max token length.
-        dtype: Model precision (bfloat16 or float16).
     """
     out_path = _get_cache_path(cache_dir, model_name, dataset_name)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -61,11 +83,19 @@ def extract_and_cache(
                 print(f"Cache already exists at {out_path}, skipping extraction.")
                 return
 
-    print(f"Loading model {model_name}...")
+    device = get_device()
+    dtype = get_dtype(device)
+    print(f"Loading model {model_name} on {device} ({dtype})...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=dtype, device_map="auto"
-    )
+
+    if device.type == "mps":
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=dtype
+        ).to(device)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=dtype, device_map="auto"
+        )
     model.eval()
 
     if tokenizer.pad_token is None:
@@ -116,7 +146,7 @@ def extract_and_cache(
             all_activations[layer_idx].append(pooled.cpu().numpy())
 
         captured.clear()
-        torch.cuda.empty_cache()
+        empty_cache()
 
     # Remove hooks
     for h in hooks:
