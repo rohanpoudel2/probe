@@ -14,6 +14,7 @@ from .base import Probe
 class PromptedProbe(Probe):
     name = "P6_prompted"
     requires_modified_activations = "prompted"
+    cache_suffix = "_prompted"
 
     def __init__(self, C: float = 1.0, max_iter: int = 1000):
         self.C = C

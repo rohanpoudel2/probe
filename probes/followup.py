@@ -15,6 +15,7 @@ from .base import Probe
 class FollowupProbe(Probe):
     name = "P8_followup"
     requires_modified_activations = "followup"
+    cache_suffix = "_followup"
 
     def __init__(self, C: float = 1.0, max_iter: int = 1000):
         self.C = C

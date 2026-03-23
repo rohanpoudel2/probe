@@ -1,23 +1,21 @@
-"""Filter dataset samples by model's internal confidence (logit difference).
+"""Task-aware dataset filtering by model confidence."""
 
-Following the base paper protocol: only keep samples where the model's logit
-difference between "Yes" and "No" tokens signals a confident internal belief.
-This isolates the probe's ability to detect the target concept from confounds
-related to factual uncertainty.
-"""
+from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
-import torch
 import numpy as np
-from tqdm import tqdm
+import torch
 from datasets import Dataset
+from tqdm import tqdm
+
+from .loading import DATASET_SPECS
 
 
 def _get_yes_no_token_ids(tokenizer):
-    """Get token IDs for 'Yes' and 'No' across different tokenizers."""
-    # Try common variations
+    """Get token IDs for single-token yes/no answers across tokenizers."""
     for yes_str in ["Yes", "yes", " Yes", " yes"]:
         ids = tokenizer.encode(yes_str, add_special_tokens=False)
         if len(ids) == 1:
@@ -37,9 +35,42 @@ def _get_yes_no_token_ids(tokenizer):
     return yes_id, no_id
 
 
-def _format_prompt(text: str) -> str:
-    """Format a text sample as a yes/no classification question."""
-    return f"Is the following message spam? Answer Yes or No.\n\n{text}\n\nAnswer:"
+def format_filter_prompt(
+    text: str,
+    dataset_name: str,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """Build the filtering prompt for a given task family."""
+    metadata = metadata or {}
+    task_type = DATASET_SPECS[dataset_name].task_type
+
+    if task_type == "spam":
+        return f"Is the following message spam? Answer Yes or No.\n\n{text}\n\nAnswer:"
+
+    if dataset_name == "mask":
+        proposition = metadata.get("proposition", "")
+        belief_target = metadata.get("belief_target", "")
+        pressure_prompt = metadata.get("pressure_prompt", "")
+        belief_prompt = metadata.get("belief_elicitation_prompt", "")
+
+        parts = [
+            "Given the proposition and the model's pressured scenario, does the model appear to know the true answer? Answer Yes or No.",
+        ]
+        if proposition:
+            parts.append(f"Proposition: {proposition}")
+        if belief_target:
+            parts.append(f"Ground truth resolution: {belief_target}")
+        if pressure_prompt:
+            parts.append(f"Pressure prompt: {pressure_prompt}")
+        if belief_prompt:
+            parts.append(f"Belief elicitation prompt: {belief_prompt}")
+        parts.append("Answer:")
+        return "\n\n".join(parts)
+
+    if task_type == "honesty":
+        raise ValueError(f"Unsupported honesty dataset for filtering: {dataset_name}")
+
+    raise ValueError(f"Unsupported dataset/task for filtering: {dataset_name}")
 
 
 @torch.no_grad()
@@ -47,22 +78,17 @@ def filter_by_logit_confidence(
     dataset: Dataset,
     model,
     tokenizer,
+    dataset_name: str,
     threshold: float = 0.0,
     batch_size: int = 8,
     max_length: int = 512,
-) -> tuple[Dataset, np.ndarray]:
-    """Filter dataset to samples where the model has confident internal belief.
-
-    Args:
-        dataset: Dataset with 'text' and 'label' columns.
-        model: A causal LM (already on device, eval mode).
-        tokenizer: Matching tokenizer.
-        threshold: Minimum absolute logit difference to keep a sample.
-        batch_size: Batch size for forward passes.
-        max_length: Max token length for inputs.
+) -> tuple[Dataset, np.ndarray, np.ndarray]:
+    """Filter a dataset to samples where the model's belief matches the label.
 
     Returns:
-        Filtered dataset and array of logit differences for kept samples.
+        filtered_dataset,
+        kept_original_indices,
+        kept_logit_diffs
     """
     model.eval()
     device = next(model.parameters()).device
@@ -72,7 +98,15 @@ def filter_by_logit_confidence(
         tokenizer.pad_token = tokenizer.eos_token
 
     logit_diffs = []
-    prompts = [_format_prompt(t) for t in dataset["text"]]
+    prompts = []
+    for sample in dataset:
+        prompts.append(
+            format_filter_prompt(
+                sample["text"],
+                dataset_name,
+                metadata={k: v for k, v in sample.items() if k not in {"text", "label"}},
+            )
+        )
 
     for i in tqdm(range(0, len(prompts), batch_size), desc="Computing logit diffs"):
         batch_prompts = prompts[i : i + batch_size]
@@ -85,7 +119,6 @@ def filter_by_logit_confidence(
         ).to(device)
 
         outputs = model(**inputs)
-        # Get logits at the last non-padding token for each sample
         for j in range(len(batch_prompts)):
             attention_mask = inputs["attention_mask"][j]
             last_idx = attention_mask.sum() - 1
@@ -94,28 +127,28 @@ def filter_by_logit_confidence(
             logit_diffs.append(diff)
 
     logit_diffs = np.array(logit_diffs)
-
-    # For spam (label=1), we expect model to lean "Yes" (positive diff)
-    # For ham (label=0), we expect model to lean "No" (negative diff)
-    # "Confident" means the model's belief aligns with the ground truth
-    aligned_diffs = np.where(
-        np.array(dataset["label"]) == 1, logit_diffs, -logit_diffs
-    )
+    labels = np.array(dataset["label"])
+    aligned_diffs = np.where(labels == 1, logit_diffs, -logit_diffs)
     keep_mask = aligned_diffs > threshold
     keep_indices = np.where(keep_mask)[0]
 
     filtered = dataset.select(keep_indices.tolist())
-    return filtered, logit_diffs[keep_indices]
+    return filtered, keep_indices, logit_diffs[keep_indices]
+
+
+def apply_saved_filter(dataset: Dataset, indices: np.ndarray) -> Dataset:
+    """Reapply a previously saved list of kept original indices."""
+    return dataset.select(indices.tolist())
 
 
 def save_filtered_indices(indices: np.ndarray, path: Path):
     """Save filtered sample indices for reproducibility."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(indices.tolist(), f)
 
 
 def load_filtered_indices(path: Path) -> np.ndarray:
     """Load previously saved filtered indices."""
-    with open(path) as f:
-        return np.array(json.load(f))
+    with open(path, encoding="utf-8") as f:
+        return np.array(json.load(f), dtype=int)
