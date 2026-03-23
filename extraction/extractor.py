@@ -25,7 +25,7 @@ def get_device():
 def get_dtype(device: torch.device):
     """Pick a safe dtype for the device. MPS doesn't support bfloat16."""
     if device.type == "mps":
-        return torch.float32
+        return torch.float16
     return torch.bfloat16
 
 

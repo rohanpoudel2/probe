@@ -11,7 +11,7 @@ datasets:
   sms: ucirvine/sms_spam
 
 extraction:
-  batch_size: 4
+  batch_size: 2
   max_length: 512
   cache_dir: ./cache/activations
   pooling: mean
