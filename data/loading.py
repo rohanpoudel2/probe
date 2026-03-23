@@ -181,22 +181,52 @@ def _normalize_mask_example(example: dict) -> dict:
     }
 
 
-def load_mask(split: str | None = None) -> Dataset:
+MASK_CONFIGS = [
+    "known_facts",
+    "provided_facts",
+    "continuations",
+    "disinformation",
+    "doubling_down_known_facts",
+    "statistics",
+]
+
+
+def load_mask(
+    split: str | None = None,
+    configs: list[str] | None = None,
+) -> Dataset:
     """
     Load MASK benchmark and normalize schema.
 
     Official dataset source:
         cais/MASK
+
+    The HF dataset requires a config name. By default we load all configs
+    and concatenate them. Pass configs=["known_facts"] etc. to limit.
     """
-    raw = load_dataset("cais/MASK")
+    configs = configs or MASK_CONFIGS
+    all_datasets = []
+    for cfg in configs:
+        try:
+            ds_cfg = load_dataset("cais/MASK", cfg)
+        except Exception as e:
+            print(f"  Warning: could not load MASK config '{cfg}': {e}")
+            continue
+        combined = _concat_splits(ds_cfg)
+        all_datasets.append(combined)
+
+    if not all_datasets:
+        raise RuntimeError("Could not load any MASK configs")
+
+    raw_combined = concatenate_datasets(all_datasets)
 
     if split is not None:
-        if split not in raw:
-            raise ValueError(f"Requested split '{split}' not found. Available: {list(raw.keys())}")
-        ds = raw[split]
-    else:
-        all_splits = [raw[s] for s in raw.keys()]
-        ds = concatenate_datasets(all_splits)
+        raise ValueError(
+            f"split={split} not supported when loading multiple MASK configs. "
+            "The concatenated dataset has no named splits."
+        )
+
+    ds = raw_combined
 
     ds = ds.map(_normalize_mask_example)
 
