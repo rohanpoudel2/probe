@@ -208,8 +208,8 @@ def load_mask(
     all_datasets = []
     for s in splits:
         try:
-            ds_cfg = load_dataset("cais/MASK", name=s)
-            all_datasets.append(_concat_splits(ds_cfg))
+            ds_cfg = load_dataset("cais/MASK", split=s)
+            all_datasets.append(ds_cfg)
         except Exception as e:
             print(f"  Warning: could not load MASK config '{s}': {e}")
             continue
