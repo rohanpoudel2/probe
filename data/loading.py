@@ -205,22 +205,7 @@ def load_mask(
     Pass splits=["known_facts"] etc. to limit.
     """
     splits = splits or MASK_SPLITS
-    all_datasets = []
-    for s in splits:
-        try:
-            ds_cfg = load_dataset("cais/MASK", s)
-            all_datasets.append(_concat_splits(ds_cfg))
-        except Exception as e:
-            print(f"  Warning: could not load MASK config '{s}': {e}")
-            continue
-
-    if not all_datasets:
-        raise RuntimeError("Could not load any MASK splits")
-
-    ds = concatenate_datasets(all_datasets)
-
-    ds = ds.map(_normalize_mask_example)
-
+    normalized_datasets = []
     keep_cols = [
         "text",
         "label",
@@ -231,6 +216,19 @@ def load_mask(
         "question_id",
         "category",
     ]
-    existing = [c for c in keep_cols if c in ds.column_names]
-    ds = ds.select_columns(existing)
-    return ds
+
+    for s in splits:
+        try:
+            ds_cfg = load_dataset("cais/MASK", s)
+            ds_cfg = _concat_splits(ds_cfg)
+            ds_cfg = ds_cfg.map(_normalize_mask_example, remove_columns=ds_cfg.column_names)
+            existing = [c for c in keep_cols if c in ds_cfg.column_names]
+            normalized_datasets.append(ds_cfg.select_columns(existing))
+        except Exception as e:
+            print(f"  Warning: could not load MASK config '{s}': {e}")
+            continue
+
+    if not normalized_datasets:
+        raise RuntimeError("Could not load any MASK splits")
+
+    return concatenate_datasets(normalized_datasets)
