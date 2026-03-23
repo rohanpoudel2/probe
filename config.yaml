@@ -7,8 +7,12 @@ models:
     layers: [10, 20, 30, 42]
 
 datasets:
-  enron: SetFit/enron_spam
-  sms: ucirvine/sms_spam
+  in_distribution:
+    - enron
+    - mask
+  ood:
+    enron: sms
+    mask: null
 
 extraction:
   batch_size: 16
@@ -23,5 +27,16 @@ sweep:
 
 filtering:
   logit_diff_threshold: 0.0
+
+selection_metric: eval_recall_at_1pct_fpr
+
+results:
+  overwrite: false
+  save_predictions: true
+
+significance:
+  n_boot: 2000
+  alpha: 0.05
+  seed: 0
 
 results_dir: ./results

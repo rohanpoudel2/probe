@@ -8,12 +8,13 @@ class Probe(ABC):
     """Base interface for activation probes.
 
     All probes implement fit() and score(). The sweep orchestrator calls
-    them interchangeably — the only difference is which activation cache
-    each probe reads from, controlled by requires_modified_activations.
+    them interchangeably — the main behavioural difference is which activation
+    cache each probe reads from.
     """
 
     name: str = "base"
     requires_modified_activations: str | None = None  # "prompted", "followup", or None
+    cache_suffix: str = ""
 
     @abstractmethod
     def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> None:

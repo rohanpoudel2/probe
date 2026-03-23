@@ -1,4 +1,6 @@
-"""Results aggregation: collect JSON lines into summary DataFrames."""
+"""Aggregate result rows into paper ready summary tables."""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -10,11 +12,10 @@ from .metrics import compute_fsei
 
 
 def collect_results(results_dir: str) -> pd.DataFrame:
-    """Load all result JSON lines files into a single DataFrame."""
     results_path = Path(results_dir)
     rows = []
     for f in sorted(results_path.glob("*.jsonl")):
-        with open(f) as fh:
+        with open(f, encoding="utf-8") as fh:
             for line in fh:
                 if line.strip():
                     rows.append(json.loads(line))
@@ -22,12 +23,22 @@ def collect_results(results_dir: str) -> pd.DataFrame:
 
 
 def compute_summary_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute mean and std across seeds for each experiment configuration."""
-    group_cols = ["probe", "k", "balance_mode", "model", "layer", "dataset"]
-    metric_cols = ["auroc", "recall_at_1pct_fpr"]
+    """Mean and std across seeds for each experiment configuration."""
+    if df.empty:
+        return pd.DataFrame()
 
-    agg = df.groupby(group_cols)[metric_cols].agg(["mean", "std"]).reset_index()
-    # Flatten multi-level columns
+    group_cols = ["probe", "k", "balance_mode", "model", "layer", "dataset"]
+    metric_cols = [
+        "eval_auroc",
+        "eval_recall_at_1pct_fpr",
+        "test_auroc",
+        "test_recall_at_1pct_fpr",
+        "ood_auroc",
+        "ood_recall_at_1pct_fpr",
+        "wall_clock_s",
+    ]
+
+    agg = df.groupby(group_cols, dropna=False)[metric_cols].agg(["mean", "std"]).reset_index()
     agg.columns = [
         f"{col[0]}_{col[1]}" if col[1] else col[0]
         for col in agg.columns
@@ -35,86 +46,131 @@ def compute_summary_stats(df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
-def select_best_layer(summary: pd.DataFrame) -> pd.DataFrame:
-    """For each (probe, balance_mode, model, dataset), pick the layer with
-    the highest mean AUROC on the eval set. This avoids layer selection
-    as a confound in the final comparison."""
+def select_best_layer(
+    summary: pd.DataFrame,
+    selection_metric: str = "eval_recall_at_1pct_fpr_mean",
+) -> pd.DataFrame:
+    """Pick best layer separately for each probe, k, balance mode, model, dataset."""
+    if summary.empty:
+        return pd.DataFrame()
+
     idx = summary.groupby(
-        ["probe", "balance_mode", "model", "dataset"]
-    )["auroc_mean"].idxmax()
+        ["probe", "k", "balance_mode", "model", "dataset"],
+        dropna=False,
+    )[selection_metric].idxmax()
+
     return summary.loc[idx].reset_index(drop=True)
 
 
-def compute_fsei_table(
-    df: pd.DataFrame, k_values: list[int]
-) -> pd.DataFrame:
-    """Compute FSEI for each (probe, balance_mode, model, dataset) at the best layer."""
-    # First get mean recall@1%FPR per (probe, k, balance_mode, model, layer, dataset)
-    group_cols = ["probe", "k", "balance_mode", "model", "layer", "dataset"]
-    means = df.groupby(group_cols)["recall_at_1pct_fpr"].mean().reset_index()
-
-    # Select best layer per probe config
-    best_layers = means.groupby(
-        ["probe", "balance_mode", "model", "dataset"]
-    ).apply(
-        lambda g: g.loc[
-            g.groupby("layer")["recall_at_1pct_fpr"].mean().idxmax()
-        ]["layer"].iloc[0]
-        if len(g) > 0 else None,
-        include_groups=False,
-    ).reset_index(name="best_layer")
-
-    # Compute FSEI per probe config
-    fsei_rows = []
-    for _, row in best_layers.iterrows():
-        probe, bm, model, ds, layer = (
-            row["probe"], row["balance_mode"], row["model"],
-            row["dataset"], row["best_layer"],
-        )
-        subset = means[
-            (means["probe"] == probe)
-            & (means["balance_mode"] == bm)
-            & (means["model"] == model)
-            & (means["dataset"] == ds)
-            & (means["layer"] == layer)
-        ]
-        recall_by_k = dict(zip(subset["k"], subset["recall_at_1pct_fpr"]))
-        available_k = [k for k in k_values if k in recall_by_k]
-
-        if len(available_k) >= 2:
-            fsei = compute_fsei(recall_by_k, available_k)
-        else:
-            fsei = float("nan")
-
-        fsei_rows.append({
-            "probe": probe,
-            "balance_mode": bm,
-            "model": model,
-            "dataset": ds,
-            "best_layer": layer,
-            "fsei": fsei,
-        })
-
-    return pd.DataFrame(fsei_rows)
-
-
-def make_decision_table(summary: pd.DataFrame, k_values: list[int]) -> pd.DataFrame:
-    """For each k value, which probe achieves the best mean Recall@1%FPR?
-
-    This is the practitioner deliverable: a lookup table from k to recommended probe.
-    """
+def compute_fsei_table(best_layer_summary: pd.DataFrame, k_values: list[int]) -> pd.DataFrame:
+    """Compute FSEI using best layer test recall values."""
     rows = []
-    for k in k_values:
-        subset = summary[summary["k"] == k]
-        if subset.empty:
-            continue
-        best_idx = subset["recall_at_1pct_fpr_mean"].idxmax()
-        best = subset.loc[best_idx]
-        rows.append({
-            "k": k,
-            "best_probe": best["probe"],
-            "recall_at_1pct_fpr": best["recall_at_1pct_fpr_mean"],
-            "auroc": best["auroc_mean"],
-            "balance_mode": best["balance_mode"],
-        })
+
+    if best_layer_summary.empty:
+        return pd.DataFrame()
+
+    for keys, g in best_layer_summary.groupby(
+        ["probe", "balance_mode", "model", "dataset"],
+        dropna=False,
+    ):
+        recall_by_k = {}
+        best_layer_by_k = {}
+
+        for _, row in g.iterrows():
+            k = int(row["k"])
+            val = row["test_recall_at_1pct_fpr_mean"]
+            if pd.notnull(val):
+                recall_by_k[k] = float(val)
+                best_layer_by_k[k] = int(row["layer"])
+
+        available_k = [k for k in k_values if k in recall_by_k]
+        fsei = compute_fsei(recall_by_k, available_k) if len(available_k) >= 2 else float("nan")
+
+        rows.append(
+            {
+                "probe": keys[0],
+                "balance_mode": keys[1],
+                "model": keys[2],
+                "dataset": keys[3],
+                "fsei": fsei,
+                "k_min": min(available_k) if available_k else np.nan,
+                "k_max": max(available_k) if available_k else np.nan,
+            }
+        )
+
     return pd.DataFrame(rows)
+
+
+def make_decision_table(best_layer_summary: pd.DataFrame) -> pd.DataFrame:
+    """For each dataset, model, balance mode, and k, recommend the best probe."""
+    if best_layer_summary.empty:
+        return pd.DataFrame()
+
+    idx = best_layer_summary.groupby(
+        ["dataset", "model", "balance_mode", "k"],
+        dropna=False,
+    )["test_recall_at_1pct_fpr_mean"].idxmax()
+
+    cols = [
+        "dataset",
+        "model",
+        "balance_mode",
+        "k",
+        "probe",
+        "layer",
+        "test_recall_at_1pct_fpr_mean",
+        "test_recall_at_1pct_fpr_std",
+        "test_auroc_mean",
+        "test_auroc_std",
+        "ood_recall_at_1pct_fpr_mean",
+        "ood_recall_at_1pct_fpr_std",
+        "ood_auroc_mean",
+        "ood_auroc_std",
+    ]
+
+    keep_cols = [c for c in cols if c in best_layer_summary.columns]
+    return (
+        best_layer_summary.loc[idx, keep_cols]
+        .sort_values(["dataset", "model", "balance_mode", "k"])
+        .reset_index(drop=True)
+    )
+
+
+def make_ood_table(best_layer_summary: pd.DataFrame) -> pd.DataFrame:
+    if best_layer_summary.empty:
+        return pd.DataFrame()
+
+    cols = [
+        "probe",
+        "k",
+        "balance_mode",
+        "model",
+        "dataset",
+        "layer",
+        "ood_auroc_mean",
+        "ood_auroc_std",
+        "ood_recall_at_1pct_fpr_mean",
+        "ood_recall_at_1pct_fpr_std",
+    ]
+    keep_cols = [c for c in cols if c in best_layer_summary.columns]
+    return best_layer_summary[keep_cols].copy()
+
+
+def make_layer_choices(best_layer_summary: pd.DataFrame) -> pd.DataFrame:
+    if best_layer_summary.empty:
+        return pd.DataFrame()
+
+    cols = [
+        "probe",
+        "k",
+        "balance_mode",
+        "model",
+        "dataset",
+        "layer",
+        "eval_recall_at_1pct_fpr_mean",
+        "test_recall_at_1pct_fpr_mean",
+    ]
+    keep_cols = [c for c in cols if c in best_layer_summary.columns]
+    return best_layer_summary[keep_cols].sort_values(
+        ["dataset", "model", "probe", "balance_mode", "k"]
+    ).reset_index(drop=True)
