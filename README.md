@@ -147,7 +147,7 @@ After running the benchmark, the results directory contains:
 
 ## Configuration
 
-All experiment parameters live in [config.yaml](/c:/Users/dipes/Documents/probe/config.yaml):
+All experiment parameters live in [config.yaml](https://github.com/rohanpoudel2/probe/blob/main/config.yaml):
 
 - `models`: which models and layers to probe
 - `datasets`: in-distribution tasks and OOD transfer mapping
