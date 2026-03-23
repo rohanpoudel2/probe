@@ -18,7 +18,7 @@ When only a handful of positive examples are available, which probe family shoul
 | P7 | Mahalanobis Distance | Anomaly score from the negative-class distribution |
 | P8 | Followup Context Probing | Logistic regression on activations from the concatenated followup context |
 
-`P5_sae` is excluded from the main benchmark in the current workshop version because a fully faithful pretrained SAE pipeline is not yet wired end to end. The file [sae_probe.py](/c:/Users/dipes/Documents/probe/probes/sae_probe.py) remains in the repo but is not part of the default run path.
+`P5_sae` is excluded from the main benchmark in the current workshop version because a fully faithful pretrained SAE pipeline is not yet wired end to end. The file [sae_probe.py](https://github.com/rohanpoudel2/probe/blob/main/probes/sae_probe.py) remains in the repo but is not part of the default run path.
 
 ## Setup
 
