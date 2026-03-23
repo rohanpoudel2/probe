@@ -1,0 +1,29 @@
+# Claude
+.claude/
+
+# Proposals (not tracked)
+proposal.txt
+proposal_humanized.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Experiment artifacts
+cache/
+results/
+*.npy
+
+# Environment
+.env
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

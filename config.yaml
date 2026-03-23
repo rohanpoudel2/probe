@@ -1,0 +1,27 @@
+models:
+  - name: Qwen/Qwen3-4B
+    layers: [8, 16, 24, 32]
+  - name: Qwen/Qwen3-8B
+    layers: [8, 16, 24, 32]
+  - name: google/gemma-2-9b
+    layers: [10, 20, 30, 42]
+
+datasets:
+  enron: SetFit/enron_spam
+  sms: ucirvine/sms_spam
+
+extraction:
+  batch_size: 16
+  max_length: 512
+  cache_dir: ./cache/activations
+  pooling: mean
+
+sweep:
+  k_values: [1, 2, 3, 5, 10, 25, 50, 100]
+  seeds: 10
+  balance_modes: [balanced, imbalanced]
+
+filtering:
+  logit_diff_threshold: 0.0
+
+results_dir: ./results
