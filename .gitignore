@@ -3,7 +3,9 @@
 
 # Proposals (not tracked)
 proposal.txt
-proposal_humanized.txt
+
+# activation_data
+activation_data/
 
 # Python
 __pycache__/
