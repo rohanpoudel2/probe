@@ -8,7 +8,6 @@ From MAAD benchmark 2024.
 """
 
 import numpy as np
-from scipy.spatial.distance import mahalanobis
 from sklearn.covariance import LedoitWolf
 
 from .base import Probe
@@ -33,8 +32,7 @@ class MahalanobisProbe(Probe):
         self._precision = lw.precision_
 
     def score(self, X_test: np.ndarray) -> np.ndarray:
-        scores = np.array([
-            mahalanobis(x, self._mean, self._precision)
-            for x in X_test
-        ])
+        diff = X_test - self._mean
+        # Vectorised Mahalanobis: sqrt(diag((X-mu) @ P @ (X-mu).T))
+        scores = np.sqrt(np.maximum(np.einsum("ij,jk,ik->i", diff, self._precision, diff), 0.0))
         return scores

@@ -52,6 +52,20 @@ def _save_prediction_artifact(
     np.savez_compressed(predictions_dir / f"{run_id}.npz", **safe_payload)
 
 
+def _sanitize_nans(arr: np.ndarray, name: str = "activations") -> np.ndarray:
+    """Replace NaN rows with zeros once, returning the (possibly copied) array."""
+    nan_mask = np.isnan(arr).any(axis=1)
+    if nan_mask.any():
+        import logging
+        logging.warning(
+            "Found %d / %d samples with NaN %s — replacing with zeros",
+            int(nan_mask.sum()), len(arr), name,
+        )
+        arr = arr.copy()
+        arr[nan_mask] = 0.0
+    return arr
+
+
 def run_single_experiment(
     probe_cls,
     activations: np.ndarray,
@@ -60,6 +74,10 @@ def run_single_experiment(
     k: int,
     seed: int,
     balance_mode: str,
+    X_eval: np.ndarray,
+    y_eval: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
     ood_activations: np.ndarray | None = None,
     ood_labels: np.ndarray | None = None,
 ) -> tuple[dict, dict] | tuple[None, None]:
@@ -97,9 +115,6 @@ def run_single_experiment(
             "error_type": type(err).__name__,
         }
         return result, {}
-
-    X_eval, y_eval = get_split_arrays(activations, labels, splits["eval"])
-    X_test, y_test = get_split_arrays(activations, labels, splits["test"])
 
     eval_scores = probe.score(X_eval)
     test_scores = probe.score(X_test)
@@ -200,15 +215,25 @@ def run_sweep(
                 out_file.unlink()
 
             ood_ds = ood_map.get(ds_name)
-            ood_acts_by_layer: dict[int, np.ndarray] = {}
-            ood_labels_by_layer: dict[int, np.ndarray] = {}
 
+            # Cache loaded & NaN-sanitised activations by (dataset_name, layer)
+            _act_cache: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]] = {}
+
+            def _load_and_sanitize(
+                ds: str, layer: int, _cache: dict = _act_cache
+            ) -> tuple[np.ndarray, np.ndarray]:
+                key = (ds, layer)
+                if key not in _cache:
+                    acts, lbls = load_cached_activations(cache_dir, model_name, ds, layer)
+                    acts = _sanitize_nans(acts, name=f"{ds}/layer_{layer}")
+                    _cache[key] = (acts, lbls)
+                return _cache[key]
+
+            # Pre-load base OOD activations
             if ood_ds:
                 for layer in layers:
                     try:
-                        ood_a, ood_l = load_cached_activations(cache_dir, model_name, ood_ds, layer)
-                        ood_acts_by_layer[layer] = ood_a
-                        ood_labels_by_layer[layer] = ood_l
+                        _load_and_sanitize(ood_ds, layer)
                     except FileNotFoundError:
                         pass
 
@@ -221,35 +246,27 @@ def run_sweep(
                     cache_ds_name = f"{ds_name}{suffix}"
 
                     try:
-                        activations, labels = load_cached_activations(
-                            cache_dir=cache_dir,
-                            model_name=model_name,
-                            dataset_name=cache_ds_name,
-                            layer=layer,
-                        )
+                        activations, labels = _load_and_sanitize(cache_ds_name, layer)
                     except FileNotFoundError:
                         print(f"  Missing cache for {cache_ds_name} layer {layer}. Skipping {probe_name}.")
                         continue
 
+                    # Precompute eval/test splits once per probe+layer
+                    X_eval, y_eval = get_split_arrays(activations, labels, splits["eval"])
+                    X_test, y_test = get_split_arrays(activations, labels, splits["test"])
+
                     ood_a = None
                     ood_l = None
                     if ood_ds:
-                        if suffix:
-                            try:
-                                ood_a, ood_l = load_cached_activations(
-                                    cache_dir=cache_dir,
-                                    model_name=model_name,
-                                    dataset_name=f"{ood_ds}{suffix}",
-                                    layer=layer,
-                                )
-                            except FileNotFoundError:
-                                pass
-                        else:
-                            ood_a = ood_acts_by_layer.get(layer)
-                            ood_l = ood_labels_by_layer.get(layer)
+                        ood_cache_name = f"{ood_ds}{suffix}" if suffix else ood_ds
+                        try:
+                            ood_a, ood_l = _load_and_sanitize(ood_cache_name, layer)
+                        except FileNotFoundError:
+                            pass
 
                     n_done = 0
                     total = len(k_values) * len(balance_modes) * n_seeds
+                    row_buffer: list[str] = []
 
                     for k in k_values:
                         for balance_mode in balance_modes:
@@ -274,6 +291,10 @@ def run_sweep(
                                     k=k,
                                     seed=seed,
                                     balance_mode=balance_mode,
+                                    X_eval=X_eval,
+                                    y_eval=y_eval,
+                                    X_test=X_test,
+                                    y_test=y_test,
                                     ood_activations=ood_a,
                                     ood_labels=ood_l,
                                 )
@@ -291,9 +312,7 @@ def run_sweep(
                                     "dataset": ds_name,
                                 }
                                 row.update(result)
-
-                                with open(out_file, "a", encoding="utf-8") as f:
-                                    f.write(json.dumps(row) + "\n")
+                                row_buffer.append(json.dumps(row))
 
                                 if save_predictions and pred_payload:
                                     _save_prediction_artifact(predictions_dir, run_id, pred_payload)
@@ -301,7 +320,15 @@ def run_sweep(
                                 existing_run_ids.add(run_id)
                                 n_done += 1
 
+                    # Flush buffered rows once per probe+layer
+                    if row_buffer:
+                        with open(out_file, "a", encoding="utf-8") as f:
+                            f.write("\n".join(row_buffer) + "\n")
+
                     print(f"  {probe_name} | layer {layer}: completed {n_done} new runs out of {total}")
+
+            # Free cached activations for this model+dataset
+            _act_cache.clear()
 
     print(f"\nResults saved under {results_dir}/")
 
