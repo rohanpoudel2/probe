@@ -66,7 +66,7 @@ class SAEProbe(Probe):
 
         X_selected = features[:, self._feature_indices]
         self._clf = LogisticRegression(
-            penalty="l1", solver="saga", max_iter=1000, C=1.0
+            l1_ratio=1, solver="saga", max_iter=1000, C=1.0
         )
         self._clf.fit(X_selected, y_train)
 

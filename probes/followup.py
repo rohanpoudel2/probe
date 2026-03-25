@@ -24,7 +24,7 @@ class FollowupProbe(Probe):
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
         self._clf = LogisticRegression(
-            penalty="l2", C=self.C, solver="lbfgs", max_iter=self.max_iter
+            l1_ratio=0, C=self.C, solver="lbfgs", max_iter=self.max_iter
         )
         self._clf.fit(X_train, y_train)
 
