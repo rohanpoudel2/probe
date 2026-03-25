@@ -24,6 +24,9 @@ class MahalanobisProbe(Probe):
         # Fit on negative class only (the "normal" distribution)
         X_neg = X_train[y_train == 0]
 
+        if len(X_neg) < 2:
+            raise ValueError("Mahalanobis requires at least 2 negative samples for covariance estimation")
+
         self._mean = X_neg.mean(axis=0)
 
         # LedoitWolf gives a well-conditioned covariance even when N < D
