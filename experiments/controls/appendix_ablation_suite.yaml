@@ -1,0 +1,47 @@
+base:
+  results_dir: phase6_appendix_ablations
+  overwrite: false
+  bootstrap_samples: 200
+  views: full_text,pressure_context,answer,reasoning
+  layers: all
+  probes: P1_logistic,P2_mass_mean,P3_lda,P4_cosine,P7_mahalanobis
+  k_values: 1,2,4,8
+  seeds: 5
+  balance_modes: balanced,imbalanced
+  calibration_pairs:
+    - source_task: sycophancy
+      target_task: sycophancy
+  transfer_pairs:
+    - source_task: sycophancy
+      target_task: motivated_reasoning
+    - source_task: sycophancy
+      target_task: cot_distortion
+  models:
+    - name: Qwen3-4B
+      feature_dirs:
+        sycophancy: outputs/final_features/Qwen3-4B/sycophancy_main
+        motivated_reasoning: outputs/final_features/Qwen3-4B/motivated_reasoning_main
+        cot_distortion: outputs/final_features/Qwen3-4B/cot_distortion_main
+
+ablations:
+  - name: answer_only
+    overrides:
+      views: answer
+  - name: full_text_only
+    overrides:
+      views: full_text
+  - name: no_reasoning
+    overrides:
+      views: full_text,pressure_context,answer
+  - name: linear_only
+    overrides:
+      probes: P1_logistic,P3_lda
+  - name: distance_only
+    overrides:
+      probes: P2_mass_mean,P4_cosine,P7_mahalanobis
+  - name: balanced_only
+    overrides:
+      balance_modes: balanced
+  - name: small_k_only
+    overrides:
+      k_values: 1,2

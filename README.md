@@ -1,227 +1,195 @@
-# Few Shot Activation Probe Benchmark
+# Few-Shot Internal Monitoring for Socially Misaligned Reasoning
 
-This repository benchmarks activation probe families in the extreme positive scarcity regime.
+This repo is the cleaned NeurIPS main-track pipeline for:
 
-## Main question
+- `sycophancy` as the anchor task
+- `motivated_reasoning` as the transfer task
+- `cot_distortion` as the stress test
+- `honesty_control` as a separate auxiliary MASK analysis
 
-When only a handful of positive examples are available, which probe family should you try first?
+The main paper scope is intentionally narrow:
 
-## Probe families in the main benchmark
+- models: `Qwen/Qwen3-4B`, `Qwen/Qwen3-8B`
+- appendix model: `google/gemma-2-9b`
+- core probes: `P1_logistic`, `P2_mass_mean`, `P3_lda`, `P7_mahalanobis`
+- main `k` values: `1,4,8`
+- main training mode: `balanced`
 
-| ID | Probe | Method |
-|----|-------|--------|
-| P1 | Logistic Regression | L2-regularized linear classifier on mean-pooled activations |
-| P2 | Mass-Mean | Projection onto the class mean difference vector |
-| P3 | LDA | Fisher's linear discriminant with shrinkage |
-| P4 | Cosine Similarity | Cosine distance to class centroids |
-| P6 | Prompted Probing | Logistic regression on activations from task-prompted input |
-| P7 | Mahalanobis Distance | Anomaly score from the negative-class distribution |
-| P8 | Followup Context Probing | Logistic regression on activations from the concatenated followup context |
+## Maintained Files
 
-`P5_sae` is excluded from the main benchmark in the current workshop version because a fully faithful pretrained SAE pipeline is not yet wired end to end. The file [sae_probe.py](https://github.com/rohanpoudel2/probe/blob/main/probes/sae_probe.py) remains in the repo but is not part of the default run path.
+These are the configs and scripts that define the real paper path:
 
-## Setup
+- `experiments/data/huggingface_source_lock.yaml`
+- `experiments/protocol/neurips_main_manifest.yaml`
+- `experiments/multimodel/real_models_config.yaml`
+- `experiments/protocol/ablation_suite.yaml`
+- `experiments/controls/honesty_auxiliary_manifest.yaml`
+- `experiments/controls/neurips_final_manifest.yaml`
+- `experiments/controls/appendix_ablation_suite.yaml`
+- `experiments/controls/negative_controls.yaml`
+- `experiments/submission/draft_asset_mapping.yaml`
+- `scripts/fetch_exact_hf_sources.py`
+- `scripts/build_exact_paper_datasets.py`
+
+## Environment
 
 ```bash
+export UV_CACHE_DIR=.uv-cache
+export WANDB_DISABLED=true
 uv venv
 source .venv/bin/activate
-uv pip install -r requirements.txt
+uv sync
+huggingface-cli login
+python scripts/phase0_audit.py --config config.yaml
 ```
 
-On Windows PowerShell:
+`UV_CACHE_DIR=.uv-cache` keeps `uv` cache writes inside the repo instead of depending on a machine-global cache path. `WANDB_DISABLED=true` prevents unnecessary `wandb` side effects when `sae-lens` is imported. Run `huggingface-cli login` once before the dataset fetch stage. This is required for the gated `MASK` dataset and also helps avoid model-download auth issues. Your Hugging Face account still needs to have `MASK` access approved, or the fetch stage will fail on that dataset.
 
-```powershell
-uv venv
-.venv\Scripts\Activate.ps1
-uv pip install -r requirements.txt
-```
+## Exact Upstream Dataset Lock
 
-All commands below assume the environment is active. If you prefer, you can also run them with `uv run`.
+The exact upstream raw sources are locked in `experiments/data/huggingface_source_lock.yaml`.
 
-## Supported datasets
+Locked sources:
 
-- `enron`
-- `sms`
-- `mask`
+- `SycophancyEval`: `meg-tong/sycophancy-eval`
+- `MMLU`: `cais/mmlu`
+- `ARC-Challenge`: `allenai/ai2_arc`
+- `CommonsenseQA`: `tau/commonsense_qa`
+- `AQuA-RAT`: `deepmind/aqua_rat`
+- `MASK`: `cais/MASK`
+- `MonitorBench`: GitHub-only lock for now, no verified official HF dataset path in this repo
 
-The benchmark treats Enron and MASK as in-distribution tasks. SMS is used as an out-of-distribution transfer target for Enron. The MASK loader targets the official `cais/MASK` dataset and normalizes around proposition, ground truth, pressure prompt, and belief elicitation prompt fields.
+Important:
 
-## Experiment protocol
+- the repo now automates benchmark construction from these raw sources with `scripts/build_exact_paper_datasets.py`
+- the builders use deterministic templated conversions for `SycophancyEval`, motivated-reasoning source banks, `MASK`, and `MonitorBench`
+- `MonitorBench` is fetched from GitHub because no verified official HF dataset path is pinned here
 
-1. Extract and cache activations for each model, dataset, and extraction mode.
-2. Filter examples using task-aware logit difference prompts.
-3. Build reproducible `train_pool`, `eval`, and `test` splits.
-4. Sample `k` positive examples from `train_pool` and fit probes.
-5. Select the best layer using `eval` performance.
-6. Report final metrics on `test`.
-7. Report OOD transfer where available.
-8. Run paired bootstrap significance testing on the top two probes per setting.
+## Dataset Commands
 
-## Main metrics
-
-- AUROC
-- Recall at 1 percent false positive rate
-- Few-Shot Efficiency Index
-
-## How to run
-
-The pipeline has five phases. Each one depends on the previous.
-
-### Phase 1: Extract activations (GPU)
-
-Runs one forward pass per sample through the model and caches hidden states to disk as `.npy` files. This is the only phase that needs a GPU.
+### 1. Fetch the exact raw locked sources
 
 ```bash
-python extract_activations.py --config config.yaml --model "Qwen/Qwen3-4B" --dataset enron --mode all
-python extract_activations.py --config config.yaml --model "Qwen/Qwen3-4B" --dataset sms --mode all
-python extract_activations.py --config config.yaml --model "Qwen/Qwen3-4B" --dataset mask --mode all
+python scripts/fetch_exact_hf_sources.py --source all --output_dir data/raw_sources
 ```
 
-`--mode` options: `standard`, `prompted`, `followup`, or `all`.
+These commands write raw source exports under `data/raw_sources/`.
 
-### Phase 2: Run the benchmark sweep (CPU)
-
-Trains every main-benchmark probe at every `k`, both balance modes, across all seeds. Reads from the activation cache and does not need a GPU.
+### 2. Build the benchmark-ready paper datasets automatically
 
 ```bash
-python run_sweep.py --config config.yaml --probes \
-  P1_logistic P2_mass_mean P3_lda P4_cosine P6_prompted P7_mahalanobis P8_followup
+python scripts/build_exact_paper_datasets.py --raw_dir data/raw_sources --output_dir data/final
 ```
 
-Optional subset example:
+After this step, the paper pipeline expects:
+
+- `data/final/sycophancy_main.jsonl`
+- `data/final/sycophancy_are_you_sure.jsonl`
+- `data/final/sycophancy_feedback.jsonl`
+- `data/final/motivated_reasoning_main.jsonl`
+- `data/final/motivated_reasoning_appendix.jsonl`
+- `data/final/cot_distortion_main.jsonl`
+- `data/final/honesty_control_mask.jsonl`
+
+This is the maintained no-manual dataset path.
+
+## Activation Extraction
+
+### Qwen3-4B
 
 ```bash
-python run_sweep.py --config config.yaml --model "Qwen/Qwen3-4B" --dataset enron --probes P1_logistic P2_mass_mean
+python extract_task_activations.py --task sycophancy --data data/final/sycophancy_main.jsonl --model Qwen/Qwen3-4B --layers 8,16,24,32 --views full_text,pressure_context,answer --output_dir outputs/final_features/Qwen3-4B/sycophancy_main --modified_modes standard,prompted
+python extract_task_activations.py --task motivated_reasoning --data data/final/motivated_reasoning_main.jsonl --model Qwen/Qwen3-4B --layers 8,16,24,32 --views full_text,hint_context,reasoning,reasoning_early,reasoning_mid,reasoning_late,answer --output_dir outputs/final_features/Qwen3-4B/motivated_reasoning_main --modified_modes standard,prompted
+python extract_task_activations.py --task cot_distortion --data data/final/cot_distortion_main.jsonl --model Qwen/Qwen3-4B --layers 8,16,24,32 --views full_text,reasoning,reasoning_early,reasoning_mid,reasoning_late,pre_answer,answer --output_dir outputs/final_features/Qwen3-4B/cot_distortion_main --modified_modes standard,prompted
+python extract_task_activations.py --task sycophancy --data data/final/sycophancy_are_you_sure.jsonl --model Qwen/Qwen3-4B --layers 8,16,24,32 --views full_text,pressure_context,answer --output_dir outputs/final_features/Qwen3-4B/sycophancy_are_you_sure --modified_modes standard,prompted
+python extract_task_activations.py --task sycophancy --data data/final/sycophancy_feedback.jsonl --model Qwen/Qwen3-4B --layers 8,16,24,32 --views full_text,pressure_context,answer --output_dir outputs/final_features/Qwen3-4B/sycophancy_feedback --modified_modes standard,prompted
+python extract_task_activations.py --task honesty_control --data data/final/honesty_control_mask.jsonl --model Qwen/Qwen3-4B --layers 8,16,24,32 --views full_text,reasoning,answer --output_dir outputs/final_features/Qwen3-4B/honesty_control_mask --modified_modes standard,prompted
 ```
 
-### Phase 3: Analyze benchmark outputs (CPU)
-
-Aggregates raw rows, computes summary statistics, chooses best layers, and writes the main paper tables.
+### Qwen3-8B
 
 ```bash
-python analyze.py --config config.yaml
+python extract_task_activations.py --task sycophancy --data data/final/sycophancy_main.jsonl --model Qwen/Qwen3-8B --layers 8,16,24,32 --views full_text,pressure_context,answer --output_dir outputs/final_features/Qwen3-8B/sycophancy_main --modified_modes standard,prompted
+python extract_task_activations.py --task motivated_reasoning --data data/final/motivated_reasoning_main.jsonl --model Qwen/Qwen3-8B --layers 8,16,24,32 --views full_text,hint_context,reasoning,reasoning_early,reasoning_mid,reasoning_late,answer --output_dir outputs/final_features/Qwen3-8B/motivated_reasoning_main --modified_modes standard,prompted
+python extract_task_activations.py --task cot_distortion --data data/final/cot_distortion_main.jsonl --model Qwen/Qwen3-8B --layers 8,16,24,32 --views full_text,reasoning,reasoning_early,reasoning_mid,reasoning_late,pre_answer,answer --output_dir outputs/final_features/Qwen3-8B/cot_distortion_main --modified_modes standard,prompted
+python extract_task_activations.py --task sycophancy --data data/final/sycophancy_are_you_sure.jsonl --model Qwen/Qwen3-8B --layers 8,16,24,32 --views full_text,pressure_context,answer --output_dir outputs/final_features/Qwen3-8B/sycophancy_are_you_sure --modified_modes standard,prompted
+python extract_task_activations.py --task sycophancy --data data/final/sycophancy_feedback.jsonl --model Qwen/Qwen3-8B --layers 8,16,24,32 --views full_text,pressure_context,answer --output_dir outputs/final_features/Qwen3-8B/sycophancy_feedback --modified_modes standard,prompted
+python extract_task_activations.py --task honesty_control --data data/final/honesty_control_mask.jsonl --model Qwen/Qwen3-8B --layers 8,16,24,32 --views full_text,reasoning,answer --output_dir outputs/final_features/Qwen3-8B/honesty_control_mask --modified_modes standard,prompted
 ```
 
-### Phase 4: Run significance testing (CPU)
+### Gemma-2-9b appendix model
 
 ```bash
-python significance_runner.py --config config.yaml --split test
+python extract_task_activations.py --task sycophancy --data data/final/sycophancy_main.jsonl --model google/gemma-2-9b --layers 10,20,30,42 --views full_text,pressure_context,answer --output_dir outputs/final_features/Gemma-2-9b/sycophancy_main --modified_modes standard,prompted
+python extract_task_activations.py --task motivated_reasoning --data data/final/motivated_reasoning_main.jsonl --model google/gemma-2-9b --layers 10,20,30,42 --views full_text,hint_context,reasoning,reasoning_early,reasoning_mid,reasoning_late,answer --output_dir outputs/final_features/Gemma-2-9b/motivated_reasoning_main --modified_modes standard,prompted
+python extract_task_activations.py --task cot_distortion --data data/final/cot_distortion_main.jsonl --model google/gemma-2-9b --layers 10,20,30,42 --views full_text,reasoning,reasoning_early,reasoning_mid,reasoning_late,pre_answer,answer --output_dir outputs/final_features/Gemma-2-9b/cot_distortion_main --modified_modes standard,prompted
+python extract_task_activations.py --task honesty_control --data data/final/honesty_control_mask.jsonl --model google/gemma-2-9b --layers 10,20,30,42 --views full_text,reasoning,answer --output_dir outputs/final_features/Gemma-2-9b/honesty_control_mask --modified_modes standard,prompted
 ```
 
-This writes `significance_test.csv`. If you run `--split eval`, it writes `significance_eval.csv`.
+## Main-Track Run Commands
 
-### Phase 5: Generate plots (CPU)
+### Validate configs
 
 ```bash
-python plot_runner.py --config config.yaml
+python validate_multimodel_config.py --config experiments/protocol/neurips_main_manifest.yaml --check_paths
+python validate_multimodel_config.py --config experiments/multimodel/real_models_config.yaml --check_paths
+python validate_multimodel_config.py --config experiments/controls/neurips_final_manifest.yaml --check_paths
+python validate_multimodel_config.py --config experiments/controls/honesty_auxiliary_manifest.yaml --check_paths
 ```
 
-### Full run
+### Main benchmark
 
 ```bash
-bash scripts/run_full_benchmark.sh
+python run_multimodel_task_benchmark.py --config experiments/multimodel/real_models_config.yaml
+python run_paper_benchmark.py --config experiments/protocol/neurips_main_manifest.yaml
 ```
 
-If you want to avoid activating the environment explicitly, the equivalent `uv` style is:
+### Main ablations
 
 ```bash
-uv run python extract_activations.py --config config.yaml --model "Qwen/Qwen3-4B" --dataset enron --mode all
-uv run python run_sweep.py --config config.yaml --probes P1_logistic P2_mass_mean P3_lda P4_cosine P6_prompted P7_mahalanobis P8_followup
-uv run python analyze.py --config config.yaml
-uv run python significance_runner.py --config config.yaml --split test
-uv run python plot_runner.py --config config.yaml
+python run_ablation_suite.py --config experiments/protocol/ablation_suite.yaml
 ```
 
-## Key outputs
-
-After running the benchmark, the results directory contains:
-
-- `summary.csv`
-- `best_layer_summary.csv`
-- `decision_table.csv`
-- `ood_table.csv`
-- `fsei.csv`
-- `layer_choices.csv`
-- `significance_test.csv`
-- `figures/`
-
-## Configuration
-
-All experiment parameters live in [config.yaml](https://github.com/rohanpoudel2/probe/blob/main/config.yaml):
-
-- `models`: which models and layers to probe
-- `datasets`: in-distribution tasks and OOD transfer mapping
-- `extraction`: batch size, max sequence length, cache directory, pooling mode
-- `sweep`: `k` values, number of seeds, balance modes
-- `filtering`: logit-difference threshold for confidence filtering
-- `selection_metric`: metric used for best-layer choice
-- `results`: overwrite and prediction-saving behavior
-- `significance`: bootstrap settings
-
-## Project structure
-
-```text
-.
-|-- config.yaml                 # Experiment configuration
-|-- extract_activations.py      # Phase 1: GPU activation extraction
-|-- run_sweep.py                # Phase 2: CPU benchmark sweep
-|-- analyze.py                  # Phase 3: summary tables and best-layer reporting
-|-- significance_runner.py      # Phase 4: paired bootstrap significance testing
-|-- plot_runner.py              # Phase 5: plot generation entrypoint
-|-- data/
-|   |-- loading.py              # Dataset loaders (Enron, SMS, MASK)
-|   |-- filtering.py            # Task-aware logit confidence filtering
-|   `-- splitting.py            # Train/eval/test splits and k-shot sampling
-|-- extraction/
-|   |-- extractor.py            # Standard activation extraction and caching
-|   `-- modified_extractor.py   # Prompted (P6) and followup-context (P8) extraction
-|-- probes/
-|   |-- base.py                 # Abstract probe interface
-|   |-- logistic.py             # P1: Logistic Regression
-|   |-- mass_mean.py            # P2: Mass-Mean Probe
-|   |-- lda.py                  # P3: LDA
-|   |-- cosine.py               # P4: Cosine Similarity
-|   |-- prompted.py             # P6: Prompted Probing
-|   |-- mahalanobis.py          # P7: Mahalanobis Distance
-|   |-- followup.py             # P8: Followup Context Probing
-|   `-- sae_probe.py            # P5: SAE Probe (not in main benchmark)
-|-- evaluation/
-|   |-- metrics.py              # AUROC, Recall@1%FPR, FSEI
-|   |-- aggregation.py          # Summary stats, layer selection, decision tables
-|   |-- significance.py         # Bootstrap comparison utilities
-|   `-- plots.py                # Figure generation helpers
-|-- scripts/
-|   `-- run_full_benchmark.sh   # End-to-end Lane A benchmark run
-`-- requirements.txt
-```
-
-## Compute requirements
-
-No model training or fine-tuning. GPU is only needed for activation extraction.
-
-- Minimum: L4 24 GB or equivalent
-- Probe training: CPU only after the cache is built
-- The safest first run is a small smoke test before full extraction
-
-## Recommended smoke test
-
-Run these before a full benchmark:
+### Auxiliary MASK benchmark
 
 ```bash
-python extract_activations.py --config config.yaml --model "Qwen/Qwen3-4B" --dataset mask --mode standard
-python run_sweep.py --config config.yaml --model "Qwen/Qwen3-4B" --dataset enron --probes P1_logistic P2_mass_mean
-python analyze.py --config config.yaml
-python significance_runner.py --config config.yaml --split test
-python plot_runner.py --config config.yaml
+python run_paper_benchmark.py --config experiments/controls/honesty_auxiliary_manifest.yaml
 ```
- 
-## Datasets
 
-- Training / ID task 1: [Enron-Spam](https://huggingface.co/datasets/SetFit/enron_spam)
-- Training / ID task 2: [MASK](https://huggingface.co/datasets/cais/MASK)
-- OOD transfer: [SMS Spam](https://huggingface.co/datasets/ucirvine/sms_spam)
+### Within-family sycophancy transfer
 
-## Current limitations
+```bash
+python run_task_sweep.py --source_dir outputs/final_features/Qwen3-4B/sycophancy_main --source_task sycophancy --target_dir outputs/final_features/Qwen3-4B/sycophancy_are_you_sure --target_task sycophancy --model Qwen3-4B --results_dir results/within_family_transfer --views answer --layers all --probes P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis --k_values 1,4,8 --seeds 10 --balance_modes balanced --overwrite
+python run_task_sweep.py --source_dir outputs/final_features/Qwen3-8B/sycophancy_main --source_task sycophancy --target_dir outputs/final_features/Qwen3-8B/sycophancy_are_you_sure --target_task sycophancy --model Qwen3-8B --results_dir results/within_family_transfer --views answer --layers all --probes P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis --k_values 1,4,8 --seeds 10 --balance_modes balanced
+python -m cli.aggregate_task_results --results_dir results/within_family_transfer --bootstrap_samples 1000
+python -m cli.compute_task_significance --results_dir results/within_family_transfer
+python -m cli.build_transfer_matrix --results_dir results/within_family_transfer
+```
 
-- The exact exposed Hugging Face field names for `cais/MASK` should still be checked once in your runtime environment.
-- `P8_followup` currently pools over the full concatenated context rather than followup tokens only, so it should be interpreted as a context-based augmentation baseline rather than a pure followup token readout.
+### Appendix and release
+
+```bash
+python run_release_pipeline.py --base_config experiments/controls/neurips_final_manifest.yaml --controls_config experiments/controls/negative_controls.yaml
+python run_ablation_suite.py --config experiments/controls/appendix_ablation_suite.yaml
+```
+
+### Camera-ready artifacts
+
+```bash
+python build_numbered_draft_assets.py --results_dir phase5_neurips_main_results --mapping experiments/submission/draft_asset_mapping.yaml
+python generate_result_narratives.py --results_dir phase5_neurips_main_results
+python package_camera_ready_bundle.py --results_dir phase5_neurips_main_results --mapping experiments/submission/draft_asset_mapping.yaml
+python build_submission_manifest.py --bundle_dir phase5_neurips_main_results/camera_ready_bundle
+```
+
+## Operational Notes
+
+- Run `phase5`, `phase7`, and `phase8` style pipelines sequentially, not in parallel. They reuse shared temp/result locations.
+- `MASK` stays auxiliary. Do not fold it into the main sycophancy benchmark.
+- The repo no longer treats sample or smoke configs as the primary path.
+
+## Paper Docs
+
+- [docs/neurips_main_track_map.md](docs/neurips_main_track_map.md)
+- [docs/final_paper_runbook.md](docs/final_paper_runbook.md)
+- [docs/final_paper_experiment_commands.tex](docs/final_paper_experiment_commands.tex)

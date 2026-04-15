@@ -1,0 +1,52 @@
+\subsection{Exact command sequence}
+
+We ran the experiments using the repository entrypoints in the following order. First, we prepared the environment and locked the paper scope:
+\begin{verbatim}
+export UV_CACHE_DIR=.uv-cache
+export WANDB_DISABLED=true
+uv venv
+source .venv/bin/activate
+uv sync
+huggingface-cli login
+python scripts/phase0_audit.py --config config.yaml
+\end{verbatim}
+
+We then fetched the exact locked raw sources and built the benchmark-ready paper datasets:
+\begin{verbatim}
+python scripts/fetch_exact_hf_sources.py --source all --output_dir data/raw_sources
+python scripts/build_exact_paper_datasets.py --raw_dir data/raw_sources --output_dir data/final
+\end{verbatim}
+
+After that, we extracted activations for each model and task family. For the main paper models this consisted of \texttt{Qwen/Qwen3-4B} and \texttt{Qwen/Qwen3-8B}, and for appendix robustness we additionally extracted \texttt{google/gemma-2-9b}. The full command list is included in \texttt{docs/final\_paper\_runbook.md}.
+
+We then validated the paper configs and ran the main benchmark:
+\begin{verbatim}
+python validate_multimodel_config.py --config experiments/protocol/neurips_main_manifest.yaml --check_paths
+python validate_multimodel_config.py --config experiments/multimodel/real_models_config.yaml --check_paths
+python run_multimodel_task_benchmark.py --config experiments/multimodel/real_models_config.yaml
+python run_paper_benchmark.py --config experiments/protocol/neurips_main_manifest.yaml
+\end{verbatim}
+
+We then ran the auxiliary MASK-style honesty-control benchmark as a separate control analysis:
+\begin{verbatim}
+python validate_multimodel_config.py --config experiments/controls/honesty_auxiliary_manifest.yaml --check_paths
+python run_paper_benchmark.py --config experiments/controls/honesty_auxiliary_manifest.yaml
+\end{verbatim}
+
+For diagnostic experiments, we ran the targeted main ablations and the within-family sycophancy transfer sweep:
+\begin{verbatim}
+python run_ablation_suite.py --config experiments/protocol/ablation_suite.yaml
+python run_task_sweep.py --source_dir outputs/final_features/Qwen3-4B/sycophancy_main --source_task sycophancy --target_dir outputs/final_features/Qwen3-4B/sycophancy_are_you_sure --target_task sycophancy --model Qwen3-4B --results_dir results/within_family_transfer --views answer --layers all --probes P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis --k_values 1,4,8 --seeds 10 --balance_modes balanced --overwrite
+\end{verbatim}
+
+Finally, we ran the broader release checks and built the submission artifacts:
+\begin{verbatim}
+python run_release_pipeline.py --base_config experiments/controls/neurips_final_manifest.yaml --controls_config experiments/controls/negative_controls.yaml
+python run_ablation_suite.py --config experiments/controls/appendix_ablation_suite.yaml
+python build_numbered_draft_assets.py --results_dir phase5_neurips_main_results --mapping experiments/submission/draft_asset_mapping.yaml
+python generate_result_narratives.py --results_dir phase5_neurips_main_results
+python package_camera_ready_bundle.py --results_dir phase5_neurips_main_results --mapping experiments/submission/draft_asset_mapping.yaml
+python build_submission_manifest.py --bundle_dir phase5_neurips_main_results/camera_ready_bundle
+\end{verbatim}
+
+The complete, line-by-line run order used to reproduce the paper is provided in \texttt{docs/final\_paper\_runbook.md}.

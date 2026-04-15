@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=80", "wheel>=0.45"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "probe"
+version = "0.1.0"
+description = "Few-shot internal monitoring benchmark for socially misaligned reasoning"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "torch==2.11.0",
+  "transformers==5.5.4",
+  "numpy==2.4.3",
+  "scipy==1.17.1",
+  "scikit-learn==1.8.0",
+  "pandas==3.0.1",
+  "PyYAML==6.0.3",
+  "sae-lens==6.39.0",
+  "matplotlib==3.10.8",
+  "datasets==4.8.4",
+  "huggingface_hub==1.10.2",
+]
+
+[tool.setuptools]
+packages = [
+  "cli",
+  "data",
+  "evaluation",
+  "extraction",
+  "features",
+  "interventions",
+  "probes",
+  "tasks",
+  "task_benchmark",
+]
+

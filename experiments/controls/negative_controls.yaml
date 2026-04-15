@@ -1,0 +1,12 @@
+control_features_root: phase6_negative_controls/features
+control_results_root: phase6_negative_controls/results
+controls:
+  - name: permute_labels
+    control_type: permute_labels
+    seed: 0
+  - name: shuffle_rows
+    control_type: shuffle_rows
+    seed: 1
+  - name: gaussian_noise
+    control_type: gaussian_noise
+    seed: 2

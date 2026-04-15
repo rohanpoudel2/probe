@@ -1,0 +1,15 @@
+tables:
+  - source: claim_main_table.tex
+    target: Table1_main_transfer_claims.tex
+  - source: claim_appendix_table.tex
+    target: TableA1_appendix_claims.tex
+  - source: task_significance.csv
+    target: TableA2_significance.csv
+
+figures:
+  - source: camera_ready_cross_model.png
+    target: Figure1_cross_model.png
+  - source: camera_ready_k_sweep.png
+    target: Figure2_k_sweep.png
+  - source: task_transfer_matrix.png
+    target: FigureA1_transfer_matrix.png

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.metrics import average_precision_score, roc_auc_score, roc_curve
 
 
 def compute_auroc(y_true: np.ndarray, scores: np.ndarray) -> float:
@@ -11,6 +11,13 @@ def compute_auroc(y_true: np.ndarray, scores: np.ndarray) -> float:
     if len(np.unique(y_true)) < 2:
         return float("nan")
     return roc_auc_score(y_true, scores)
+
+
+def compute_auprc(y_true: np.ndarray, scores: np.ndarray) -> float:
+    """Compute Area Under the Precision-Recall Curve."""
+    if len(np.unique(y_true)) < 2:
+        return float("nan")
+    return average_precision_score(y_true, scores)
 
 
 def compute_recall_at_fpr(
@@ -27,18 +34,46 @@ def compute_recall_at_fpr(
     return float(tpr[valid].max())
 
 
-def compute_fsei(recall_by_k: dict[int, float], k_values: list[int]) -> float:
-    """Compute the Few-Shot Efficiency Index (FSEI)."""
-    sorted_k = sorted(k_values)
-    recalls = np.array([recall_by_k[k] for k in sorted_k])
-    k_arr = np.array(sorted_k, dtype=float)
+def compute_brier_score(y_true: np.ndarray, scores: np.ndarray) -> float:
+    scores = np.asarray(scores, dtype=float)
+    y_true = np.asarray(y_true, dtype=float)
+    if len(scores) == 0:
+        return float("nan")
+    scores = np.clip(scores, 0.0, 1.0)
+    return float(np.mean((scores - y_true) ** 2))
 
-    area = np.trapz(recalls, x=k_arr)
-    max_area = np.trapz(np.ones_like(k_arr), x=k_arr)
 
-    if max_area == 0:
-        return 0.0
-    return float(area / max_area)
+def compute_ece(y_true: np.ndarray, scores: np.ndarray, n_bins: int = 10) -> float:
+    scores = np.asarray(scores, dtype=float)
+    y_true = np.asarray(y_true, dtype=float)
+    if len(scores) == 0:
+        return float("nan")
+    scores = np.clip(scores, 0.0, 1.0)
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    bucket_ids = np.digitize(scores, bins[1:-1], right=True)
+    ece = 0.0
+    for idx in range(n_bins):
+        mask = bucket_ids == idx
+        if not np.any(mask):
+            continue
+        conf = float(scores[mask].mean())
+        acc = float(y_true[mask].mean())
+        ece += (np.sum(mask) / len(scores)) * abs(acc - conf)
+    return float(ece)
+
+
+def compute_fsei(metric_by_k: dict[int, float], k_values: list[int], weighting: str = "inverse_k") -> float:
+    available = [(int(k), float(metric_by_k[k])) for k in sorted(k_values) if k in metric_by_k and not np.isnan(metric_by_k[k])]
+    if not available:
+        return float("nan")
+    ks = np.asarray([k for k, _ in available], dtype=float)
+    vals = np.asarray([v for _, v in available], dtype=float)
+    if weighting == "inverse_k":
+        weights = 1.0 / np.maximum(ks, 1.0)
+    else:
+        weights = np.ones_like(ks)
+    weights = weights / weights.sum()
+    return float(np.sum(weights * vals))
 
 
 def paired_bootstrap_metric_diff(

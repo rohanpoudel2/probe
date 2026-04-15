@@ -1,0 +1,27 @@
+results_dir: phase4_real_main_results
+overwrite: false
+bootstrap_samples: 1000
+views: answer,reasoning
+layers: all
+probes: P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis
+k_values: 1,4,8
+seeds: 10
+balance_modes: balanced
+
+task_pairs:
+  - source_task: sycophancy
+    target_task: motivated_reasoning
+  - source_task: sycophancy
+    target_task: cot_distortion
+
+models:
+  - name: Qwen3-4B
+    feature_dirs:
+      sycophancy: outputs/final_features/Qwen3-4B/sycophancy_main
+      motivated_reasoning: outputs/final_features/Qwen3-4B/motivated_reasoning_main
+      cot_distortion: outputs/final_features/Qwen3-4B/cot_distortion_main
+  - name: Qwen3-8B
+    feature_dirs:
+      sycophancy: outputs/final_features/Qwen3-8B/sycophancy_main
+      motivated_reasoning: outputs/final_features/Qwen3-8B/motivated_reasoning_main
+      cot_distortion: outputs/final_features/Qwen3-8B/cot_distortion_main

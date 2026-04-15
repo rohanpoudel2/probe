@@ -1,0 +1,96 @@
+# Exact upstream dataset sources used for the NeurIPS paper plan.
+# This file is a source lock, not a directly runnable normalization manifest.
+# Use it to pin the authoritative Hugging Face repos / revisions before you
+# build the final task-family JSONL files consumed by the benchmark pipeline.
+# The locked repos, revisions, splits, and file paths below are consumed by the
+# repo's automated raw-source fetch and dataset-build scripts.
+
+sources:
+  sycophancy_eval:
+    repo: meg-tong/sycophancy-eval
+    revision: 336bcd542e6b190abf911455f379244244056fd2
+    notes:
+      - Use the exact pinned JSONL files below rather than the moving `main` branch.
+      - These are raw benchmark files mirrored on Hugging Face.
+    files:
+      - name: answer
+        loader: json
+        data_files:
+          - hf://datasets/meg-tong/sycophancy-eval@336bcd542e6b190abf911455f379244244056fd2/answer.jsonl
+        split: train
+      - name: are_you_sure
+        loader: json
+        data_files:
+          - hf://datasets/meg-tong/sycophancy-eval@336bcd542e6b190abf911455f379244244056fd2/are_you_sure.jsonl
+        split: train
+      - name: feedback
+        loader: json
+        data_files:
+          - hf://datasets/meg-tong/sycophancy-eval@336bcd542e6b190abf911455f379244244056fd2/feedback.jsonl
+        split: train
+
+  motivated_reasoning_raw:
+    notes:
+      - These are the exact Hugging Face sources for the raw question banks.
+      - They still need your hinted / biased-prompt construction before they become `motivated_reasoning` task JSONL files.
+    datasets:
+      - name: mmlu
+        repo: cais/mmlu
+        revision: c30699e
+        subset: all
+        splits:
+          source_train: auxiliary_train
+          eval: validation
+          test: test
+      - name: arc_challenge
+        repo: allenai/ai2_arc
+        revision: 1664417
+        subset: ARC-Challenge
+        splits:
+          train: train
+          eval: validation
+          test: test
+      - name: commonsense_qa
+        repo: tau/commonsense_qa
+        revision: 94630fe
+        subset: default
+        splits:
+          train: train
+          eval: validation
+          test: test
+      - name: aqua_rat
+        repo: deepmind/aqua_rat
+        revision: 33301c6
+        subset: raw
+        splits:
+          train: train
+          eval: validation
+          test: test
+
+  honesty_control_raw:
+    notes:
+      - MASK is the exact auxiliary honesty-control source.
+      - The repo is gated and requires access approval.
+      - The raw benchmark contains prompts and metadata, not final benchmark-ready dishonest vs honest model outputs.
+      - You still need a generation and labeling step before producing `honesty_control` task JSONL files.
+    dataset:
+      repo: cais/MASK
+      gated: true
+      splits:
+        - continuations
+        - disinformation
+        - doubling_down_known_facts
+        - known_facts
+        - provided_facts
+        - statistics
+      hf_split: test
+
+  cot_monitorability_raw:
+    notes:
+      - No verified official Hugging Face dataset path for MonitorBench was found during source locking.
+      - Use the GitHub repo below as the authoritative upstream until an official HF dataset appears.
+    monitorbench:
+      status: no_verified_huggingface_dataset_found
+      github_repo: https://github.com/ASTRAL-Group/MonitorBench
+      github_zip: https://github.com/ASTRAL-Group/MonitorBench/archive/refs/heads/main.zip
+      paper_page: https://huggingface.co/papers/2603.28590

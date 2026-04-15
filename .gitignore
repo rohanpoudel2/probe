@@ -18,8 +18,21 @@ build/
 
 # Experiment artifacts
 cache/
+.uv-cache/
 results/
+outputs/
+data/raw_sources/
+data/final/
+phase4_real_main_results/
+phase5_neurips_main_results/
+phase6_honesty_auxiliary_results/
+phase6_negative_controls/
 *.npy
+tmp/
+tmp_phase*/
+*.generated.yaml
+.vscode/
+wandb/
 
 # Environment
 .env

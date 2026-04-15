@@ -1,3 +1,18 @@
+project:
+  name: few_shot_internal_monitoring
+  phase: 0
+  target_track: neurips_or_iclr_main
+  paper_direction: few_shot_internal_monitoring_and_control_of_socially_misaligned_reasoning
+
+task_families:
+  primary: sycophancy
+  transfer:
+    - motivated_reasoning
+  stress_tests:
+    - cot_distortion
+  auxiliary_controls:
+    - honesty_control
+
 models:
   - name: Qwen/Qwen3-4B
     layers: [8, 16, 24, 32]
@@ -6,37 +21,116 @@ models:
   - name: google/gemma-2-9b
     layers: [10, 20, 30, 42]
 
-datasets:
-  in_distribution:
-    - enron
-    - mask
-  ood:
-    enron: sms
-    mask: null
+features:
+  default_view: full_text
+  supported_views:
+    - full_text
+    - answer
+    - reasoning
+    - reasoning_early
+    - reasoning_mid
+    - reasoning_late
+    - pressure_context
+    - hint_context
+    - pre_answer
+  pooling_modes:
+    - mean
+    - last
+
+group_splitting:
+  enabled: true
+  default_key: question_id
 
 extraction:
   batch_size: 16
-  max_length: 512
-  cache_dir: ./cache/activations
+  max_length: 1024
   pooling: mean
 
-sweep:
-  k_values: [1, 2, 3, 5, 10, 25, 50, 100]
-  seeds: 10
-  balance_modes: [balanced, imbalanced]
+dataset_prep:
+  entrypoint: scripts/build_exact_paper_datasets.py
+  source_lock: experiments/data/huggingface_source_lock.yaml
+  fetch_script: scripts/fetch_exact_hf_sources.py
+  build_script: scripts/build_exact_paper_datasets.py
+  raw_output_dir: data/raw_sources
+  final_output_dir: data/final
 
-filtering:
-  logit_diff_threshold: 0.0
-
-selection_metric: eval_recall_at_1pct_fpr
-
-results:
-  overwrite: false
-  save_predictions: true
-
-significance:
-  n_boot: 2000
-  alpha: 0.05
-  seed: 0
+intervention:
+  enabled: true
+  backend: online
+  default_mode: threshold_triggered
+  alpha_values: [0.25, 0.5, 1.0, 2.0]
 
 results_dir: ./results
+
+task_data:
+  sycophancy: data/examples/sycophancy_sample.jsonl
+  motivated_reasoning: data/examples/motivated_reasoning_sample.jsonl
+  cot_distortion: data/examples/cot_distortion_sample.jsonl
+  honesty_control: data/examples/honesty_control_sample.jsonl
+
+phase1:
+  enabled: true
+  group_split_key: question_id
+  default_views: [full_text, pressure_context, answer]
+  default_pooling_mode: mean
+  example_extract_command: python extract_task_activations.py --task sycophancy --data data/final/sycophancy_main.jsonl --model Qwen/Qwen3-4B --layers 8,16,24,32 --views full_text,pressure_context,answer --output_dir outputs/final_features/Qwen3-4B/sycophancy_main --modified_modes standard,prompted
+
+phase2:
+  enabled: true
+  task_sweep_entrypoint: run_task_sweep.py
+  aggregation_entrypoint: cli.aggregate_task_results
+  default_probes:
+    - P1_logistic
+    - P2_mass_mean
+    - P3_lda
+    - P4_cosine
+    - P5_sae
+    - P6_prompted
+    - P7_mahalanobis
+  default_k_values: [1, 2, 4, 8]
+  default_balance_modes: [balanced, imbalanced]
+
+phase3:
+  enabled: true
+  significance_entrypoint: cli.compute_task_significance
+  transfer_matrix_entrypoint: cli.build_transfer_matrix
+  plot_entrypoint: cli.plot_task_results
+  primary_plot_metric: transfer_recall_at_1pct_fpr_mean
+
+phase4:
+  enabled: true
+  multimodel_entrypoint: run_multimodel_task_benchmark.py
+  frozen_selector_entrypoint: cli.build_frozen_transfer_report
+  cross_model_table_entrypoint: cli.build_cross_model_tables
+  camera_ready_plot_entrypoint: cli.plot_camera_ready_task_results
+  geometry_entrypoint: cli.build_geometry_report
+
+phase5:
+  enabled: true
+  benchmark_entrypoint: run_paper_benchmark.py
+  protocol_runner_entrypoint: run_protocol_multimodel_benchmark.py
+  config_validator_entrypoint: validate_multimodel_config.py
+  ablation_runner_entrypoint: run_ablation_suite.py
+  artifact_packager_entrypoint: package_paper_artifacts.py
+  steering_entrypoint: cli.run_steering_suite
+
+phase6:
+  enabled: true
+  control_feature_entrypoint: cli.make_control_features
+  negative_control_runner_entrypoint: run_negative_control_suite.py
+  sanity_check_entrypoint: run_sanity_checks.py
+  final_draft_packager_entrypoint: cli.package_final_draft_assets
+
+phase7:
+  enabled: true
+  claim_tests_entrypoint: run_claim_tests.py
+  robustness_summary_entrypoint: cli.build_robustness_summary
+  claim_table_entrypoint: cli.build_final_claim_tables
+  release_pipeline_entrypoint: run_release_pipeline.py
+
+phase8:
+  enabled: true
+  numbered_assets_entrypoint: build_numbered_draft_assets.py
+  narrative_entrypoint: generate_result_narratives.py
+  submission_manifest_entrypoint: build_submission_manifest.py
+  camera_ready_bundle_entrypoint: package_camera_ready_bundle.py

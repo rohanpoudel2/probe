@@ -13,7 +13,7 @@ class Probe(ABC):
     """
 
     name: str = "base"
-    requires_modified_activations: str | None = None  # "prompted", "followup", or None
+    requires_modified_activations: str | None = None  # "prompted" or None
     cache_suffix: str = ""
 
     @abstractmethod

@@ -1,0 +1,44 @@
+base:
+  results_dir: phase5_main_ablations
+  overwrite: false
+  bootstrap_samples: 1000
+  views: answer,reasoning
+  layers: all
+  probes: P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis
+  k_values: 1,4,8
+  seeds: 10
+  balance_modes: balanced
+  calibration_pairs:
+    - source_task: sycophancy
+      target_task: sycophancy
+  transfer_pairs:
+    - source_task: sycophancy
+      target_task: motivated_reasoning
+    - source_task: sycophancy
+      target_task: cot_distortion
+  models:
+    - name: Qwen3-4B
+      feature_dirs:
+        sycophancy: outputs/final_features/Qwen3-4B/sycophancy_main
+        motivated_reasoning: outputs/final_features/Qwen3-4B/motivated_reasoning_main
+        cot_distortion: outputs/final_features/Qwen3-4B/cot_distortion_main
+
+ablations:
+  - name: answer_only
+    overrides:
+      views: answer
+  - name: reasoning_only
+    overrides:
+      views: reasoning
+  - name: full_text_only
+    overrides:
+      views: full_text
+  - name: linear_family_only
+    overrides:
+      probes: P1_logistic,P2_mass_mean,P3_lda
+  - name: k_1_only
+    overrides:
+      k_values: 1
+  - name: imbalanced_training
+    overrides:
+      balance_modes: imbalanced
