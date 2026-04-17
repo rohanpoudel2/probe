@@ -8,7 +8,7 @@
 sources:
   sycophancy_eval:
     repo: meg-tong/sycophancy-eval
-    revision: 336bcd542e6b190abf911455f379244244056fd2
+    revision: "336bcd542e6b190abf911455f379244244056fd2"
     notes:
       - Use the exact pinned JSONL files below rather than the moving `main` branch.
       - These are raw benchmark files mirrored on Hugging Face.
@@ -36,7 +36,7 @@ sources:
     datasets:
       - name: mmlu
         repo: cais/mmlu
-        revision: c30699e
+        revision: "c30699e"
         subset: all
         splits:
           source_train: auxiliary_train
@@ -44,7 +44,7 @@ sources:
           test: test
       - name: arc_challenge
         repo: allenai/ai2_arc
-        revision: 1664417
+        revision: "1664417"
         subset: ARC-Challenge
         splits:
           train: train
@@ -52,7 +52,7 @@ sources:
           test: test
       - name: commonsense_qa
         repo: tau/commonsense_qa
-        revision: 94630fe
+        revision: "94630fe"
         subset: default
         splits:
           train: train
@@ -60,7 +60,7 @@ sources:
           test: test
       - name: aqua_rat
         repo: deepmind/aqua_rat
-        revision: 33301c6
+        revision: "33301c6"
         subset: raw
         splits:
           train: train
