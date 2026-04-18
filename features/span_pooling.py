@@ -13,15 +13,19 @@ class SpanPoolingError(ValueError):
 
 def mean_pool_span(hidden_states: np.ndarray, span: Span) -> np.ndarray:
     start, end = span
-    if start < 0 or end > hidden_states.shape[0] or start >= end:
+    if start < 0 or end > hidden_states.shape[0] or start > end:
         raise SpanPoolingError(f"Invalid span {span} for hidden state shape {hidden_states.shape}")
+    if start == end:
+        return np.zeros(hidden_states.shape[1], dtype=hidden_states.dtype)
     return hidden_states[start:end].mean(axis=0)
 
 
 def last_token_in_span(hidden_states: np.ndarray, span: Span) -> np.ndarray:
     start, end = span
-    if start < 0 or end > hidden_states.shape[0] or start >= end:
+    if start < 0 or end > hidden_states.shape[0] or start > end:
         raise SpanPoolingError(f"Invalid span {span} for hidden state shape {hidden_states.shape}")
+    if start == end:
+        return np.zeros(hidden_states.shape[1], dtype=hidden_states.dtype)
     return hidden_states[end - 1]
 
 
