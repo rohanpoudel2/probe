@@ -1,3 +1,5 @@
+protocol_version: frontier-v1
+protocol_stage: pilot
 results_dir: phase6_honesty_auxiliary_results
 overwrite: false
 bootstrap_samples: 1000
@@ -7,31 +9,20 @@ probes: P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis
 k_values: 1,4,8
 seeds: 10
 balance_modes: balanced
-intervention:
-  backend: feature_space
-
-task_data:
-  sycophancy: data/final/sycophancy_main.jsonl
-  honesty_control: data/final/honesty_control_mask.jsonl
+max_fpr: 0.01
+min_calibration_negatives: 1000
+run_steering: false
+run_black_box_baselines: false
+run_falsification_suite: false
 
 calibration_pairs:
   - source_task: honesty_control
     target_task: honesty_control
 
-transfer_pairs:
-  - source_task: sycophancy
-    target_task: honesty_control
-
 models:
   - name: Qwen3-4B
+    model_id: Qwen/Qwen3-4B
+    model_revision: 1cfa9a7208912126459214e8b04321603b3df60c
+    family: Qwen3
     feature_dirs:
-      sycophancy: outputs/final_features/Qwen3-4B/sycophancy_main
-      honesty_control: outputs/final_features/Qwen3-4B/honesty_control_mask
-  - name: Qwen3-8B
-    feature_dirs:
-      sycophancy: outputs/final_features/Qwen3-8B/sycophancy_main
-      honesty_control: outputs/final_features/Qwen3-8B/honesty_control_mask
-  - name: Gemma-2-9b
-    feature_dirs:
-      sycophancy: outputs/final_features/Gemma-2-9b/sycophancy_main
-      honesty_control: outputs/final_features/Gemma-2-9b/honesty_control_mask
+      honesty_control: outputs/frontier_features/Qwen3-4B/honesty_control_mask

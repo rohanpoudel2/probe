@@ -15,12 +15,14 @@ from .base import Probe
 
 class MahalanobisProbe(Probe):
     name = "P7_mahalanobis"
+    minimum_class_counts = {0: 2, 1: 1}
 
     def __init__(self):
         self._mean = None
         self._precision = None
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
+        self.validate_training_data(X_train, y_train)
         # Fit on negative class only (the "normal" distribution)
         X_neg = X_train[y_train == 0]
 

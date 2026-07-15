@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import pandas as pd
-
 from evaluation.aggregation import collect_results
 from evaluation.task_aggregation import (
     compute_task_fsei,
@@ -13,7 +11,7 @@ from evaluation.task_aggregation import (
     select_best_view_layer,
 )
 from evaluation.task_model_selection import rank_models
-from evaluation.task_statistics import add_ci_columns
+from evaluation.task_statistics import add_seed_summary_columns
 
 
 GROUP_COLS = [
@@ -31,16 +29,22 @@ METRIC_COLS = [
     "eval_auroc",
     "eval_auprc",
     "eval_recall_at_1pct_fpr",
+    "eval_recall_at_frozen_fpr",
+    "eval_fpr_at_frozen_threshold",
     "eval_brier",
     "eval_ece",
     "test_auroc",
     "test_auprc",
     "test_recall_at_1pct_fpr",
+    "test_recall_at_frozen_fpr",
+    "test_fpr_at_frozen_threshold",
     "test_brier",
     "test_ece",
     "transfer_auroc",
     "transfer_auprc",
     "transfer_recall_at_1pct_fpr",
+    "transfer_recall_at_frozen_fpr",
+    "transfer_fpr_at_frozen_threshold",
     "transfer_brier",
     "transfer_ece",
     "wall_clock_s",
@@ -48,7 +52,9 @@ METRIC_COLS = [
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Aggregate structured task-benchmark results")
+    parser = argparse.ArgumentParser(
+        description="Aggregate structured task-benchmark results"
+    )
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--selection_metric", default="eval_recall_at_1pct_fpr_mean")
     parser.add_argument("--bootstrap_samples", type=int, default=2000)
@@ -59,11 +65,16 @@ def main() -> None:
         print("No results found.")
         return
 
-    summary = add_ci_columns(
+    if "status" in df.columns:
+        failed = df[df["status"] != "ok"]
+        if not failed.empty:
+            raise RuntimeError(
+                f"Refusing to aggregate {len(failed)} failed/partial runs; repair or explicitly remove them"
+            )
+    summary = add_seed_summary_columns(
         df,
         group_cols=GROUP_COLS,
         metric_cols=METRIC_COLS,
-        n_boot=args.bootstrap_samples,
     )
     best = select_best_view_layer(summary, selection_metric=args.selection_metric)
     view_layer = make_view_layer_table(best)

@@ -14,6 +14,7 @@ class CosineProbe(Probe):
         self._centroid_neg = None
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
+        self.validate_training_data(X_train, y_train)
         self._centroid_pos = X_train[y_train == 1].mean(axis=0, keepdims=True)
         self._centroid_neg = X_train[y_train == 0].mean(axis=0, keepdims=True)
 

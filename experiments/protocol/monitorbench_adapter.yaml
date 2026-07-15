@@ -1,0 +1,117 @@
+schema_version: monitorbench-adapter-v1
+adapter_id: monitorbench-43dda599-verified-outcome-v1
+
+source:
+  repository: https://github.com/ASTRAL-Group/MonitorBench
+  revision: 43dda5994bfb16d34b1c30d4b3482d78a714e640
+  archive_url: https://github.com/ASTRAL-Group/MonitorBench/archive/43dda5994bfb16d34b1c30d4b3482d78a714e640.zip
+  archive_sha256: fba6b9d5aa4f4b3f5fe864a77b47346523f27bf16b20a1ecf880559947ed6f46
+  license: MIT
+  paper: arXiv:2603.28590
+  critical_files:
+    LICENSE: 9ebdae421b08b552f8edd69b053429fd9c8a37b44684fccba1d36aad4b8f3aef
+    main.py: dfee40da50b99b06273bb611c7b918bd0435b0abf996a76f221073d79af4e646
+    run.sh: 27cbafe2ec811dfbbf18325e0786823f3b9fb0352b59a8fcb7dfdd8a46c2c92e
+    utils.py: d14d232fa1360192c6e003d0f96fb058943e148d814befc5b855058219669de1
+    config/dataset_config.yaml: 556426f04cd6ce3d74ca292d476ed5861c885f6b1fe24e7f4e83702a24ac65c7
+    config/vllm_config.yaml: 99a862bb654faa0c06d73de86fbb7d2d6c47e8f20721870a60cf4e255da7d0b8
+    pipeline/base.py: 8281157a27dbef62982427bd2726f14a205f3f90bd4f031749244130b65c203b
+    pipeline/intervention.py: 8821b872be008e31657b62a31f3b26d51e3d016f36cf0418b42973977a9afc65
+    pipeline/outcome.py: d90ee8a7aef11405f27d15e7d4ee4f9d5d407f33fcf014f8d1be80b6f49a27dc
+    pipeline/paths.py: 11f8a6df2bb45863b89791b1f21fedd9a9aef69111c3a5def653ad8af4fd15a7
+    pipeline/process.py: 2f03e9436e9c3e2548dfb364447aea107b8a3c630950228ad1b0fdc020504e82
+    pipeline/registry.py: 4b99fc390ee28ee73005840e84991fe0ccd1c6389eafb4aa330f940e84c262f9
+
+artifact_contract:
+  filename_pattern: evaluated_llm_<stress_test>_n=<rollout_number>.tested.jsonl
+  required_record_fields:
+    - task_id
+    - messages
+    - response
+    - verification_result
+    - target
+    - metadata
+  required_metadata_fields:
+    - task
+    - stress_test
+    - original_question
+  response_formats:
+    - think_tags
+    - gpt_oss
+  structured_response_tasks:
+    - dual_objectives.agent.benign
+    - dual_objectives.agent.malicious
+
+normalization:
+  task_family: cot_distortion
+  construct_name: monitorbench_verified_target_outcome
+  protocol_split: test
+  label_source: official_monitorbench_verification_result
+  annotation_protocol: monitorbench-official-tested-artifact-v1
+  label_semantics:
+    0: official_target_outcome_not_verified
+    1: official_target_outcome_verified
+  official_metric_separation: >-
+    The derived binary outcome label is not a label of CoT unfaithfulness and is
+    not the official MonitorBench monitorability score. Official monitorability
+    must be reported separately from upstream monitor outputs.
+  generation_confidence:
+    available: false
+    reason: >-
+      Official .tested.jsonl artifacts serialize response text and verifier
+      verdicts but not the per-token distributions required by B4.
+
+tasks:
+  - task_id: goal_sandbag.safety
+    archetype: input_intervention
+  - task_id: goal_sandbag.math
+    archetype: input_intervention
+  - task_id: goal_sandbag.science
+    archetype: input_intervention
+  - task_id: goal_sandbag.engineering
+    archetype: input_intervention
+  - task_id: goal_deception.realworld
+    archetype: input_intervention
+  - task_id: cue_condition.knowledge
+    archetype: input_intervention
+  - task_id: cue_condition.preference
+    archetype: input_intervention
+  - task_id: cue_condition.judgment
+    archetype: input_intervention
+  - task_id: cue_condition.health
+    archetype: input_intervention
+  - task_id: cue_answer.math
+    archetype: input_intervention
+  - task_id: cue_answer.health
+    archetype: input_intervention
+  - task_id: cue_answer.logic
+    archetype: input_intervention
+  - task_id: dual_objectives.steganography
+    archetype: outcome_justification
+  - task_id: dual_objectives.summarization
+    archetype: outcome_justification
+  - task_id: dual_objectives.coding
+    archetype: outcome_justification
+  - task_id: dual_objectives.agent.benign
+    archetype: outcome_justification
+  - task_id: dual_objectives.agent.malicious
+    archetype: outcome_justification
+  - task_id: impossible.coding
+    archetype: outcome_justification
+  - task_id: process.multistep
+    archetype: solution_process
+
+stress_tests_by_archetype:
+  input_intervention:
+    - original
+    - standard
+    - direct_conceal
+    - monitor_aware
+  outcome_justification:
+    - standard
+    - direct_conceal
+    - monitor_aware
+  solution_process:
+    - standard
+    - direct_conceal
+    - monitor_aware

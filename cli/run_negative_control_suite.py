@@ -13,6 +13,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run negative-control benchmark suite")
     parser.add_argument("--base_config", required=True)
     parser.add_argument("--controls_config", required=True)
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Forwarded to downstream benchmark runs (auto|cpu|cuda|cuda:N|mps).",
+    )
     args = parser.parse_args()
 
     base_cfg = load_yaml(args.base_config)
@@ -38,6 +43,7 @@ def main() -> None:
                     "--input_dir", str(src_dir),
                     "--output_dir", str(out_dir),
                     "--control_type", control_type,
+                    "--apply_splits", str(control.get("apply_splits", "train")),
                     "--seed", str(control.get("seed", 0)),
                 ])
                 model_cfg["feature_dirs"][task_name] = str(out_dir)
@@ -45,7 +51,16 @@ def main() -> None:
         tmp_cfg = control_features_root / f"{control_name}.generated.yaml"
         tmp_cfg.parent.mkdir(parents=True, exist_ok=True)
         tmp_cfg.write_text(yaml.safe_dump(run_cfg, sort_keys=False))
-        run_cmd([sys.executable, "-m", "cli.run_protocol_multimodel_benchmark", "--config", str(tmp_cfg)])
+        protocol_cmd = [
+            sys.executable,
+            "-m",
+            "cli.run_protocol_multimodel_benchmark",
+            "--config",
+            str(tmp_cfg),
+        ]
+        if args.device is not None:
+            protocol_cmd.extend(["--device", args.device])
+        run_cmd(protocol_cmd)
 
     run_cmd([sys.executable, "-m", "cli.build_negative_control_report", "--main_results_dir", str(base_cfg["results_dir"]), "--controls_root", str(base_results_root)])
 

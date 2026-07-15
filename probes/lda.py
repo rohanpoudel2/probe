@@ -12,11 +12,13 @@ from .base import Probe
 
 class LDAProbe(Probe):
     name = "P3_lda"
+    minimum_class_counts = {0: 2, 1: 2}
 
     def __init__(self):
         self._clf = None
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
+        self.validate_training_data(X_train, y_train)
         self._clf = LinearDiscriminantAnalysis(
             solver="lsqr", shrinkage="auto"
         )

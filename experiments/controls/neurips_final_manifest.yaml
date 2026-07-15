@@ -1,3 +1,8 @@
+protocol_version: legacy-v0
+protocol_stage: legacy_blocked
+blocked_reason: authored completions, target-derived thresholds, and non-preregistered model selection
+max_fpr: 0.01
+min_calibration_negatives: 1000
 results_dir: phase6_neurips_final_results
 overwrite: false
 bootstrap_samples: 500

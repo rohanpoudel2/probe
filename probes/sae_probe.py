@@ -10,6 +10,7 @@ from .base import Probe
 
 class SAEProbe(Probe):
     name = "P5_sae"
+    scores_are_probabilities = True
 
     def __init__(
         self,
@@ -57,6 +58,7 @@ class SAEProbe(Probe):
         return np.concatenate(outs, axis=0)
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
+        self.validate_training_data(X_train, y_train)
         features = self._encode(X_train)
 
         pos_mean = features[y_train == 1].mean(axis=0)

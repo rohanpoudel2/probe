@@ -30,6 +30,7 @@ class TaskExample:
     metadata: Dict[str, Any] = field(default_factory=dict)
     spans: Dict[str, Span] = field(default_factory=dict)
     segments: Dict[str, str] = field(default_factory=dict)
+    messages: List[Dict[str, str]] = field(default_factory=list)
 
     def build_segments(self) -> Dict[str, str]:
         if self.segments:

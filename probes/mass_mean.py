@@ -16,6 +16,7 @@ class MassMeanProbe(Probe):
         self._direction = None
 
     def fit(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
+        self.validate_training_data(X_train, y_train)
         mu_pos = X_train[y_train == 1].mean(axis=0)
         mu_neg = X_train[y_train == 0].mean(axis=0)
         self._direction = mu_pos - mu_neg

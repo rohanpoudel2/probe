@@ -4,17 +4,17 @@ from typing import List, Optional
 
 from data.schema import TaskExample
 from tasks.base import BehaviorTask, TaskSpec
-from tasks.jsonl_utils import read_jsonl, require_fields
+from tasks.jsonl_utils import read_jsonl, require_fields, rollout_metadata
 
 
 class SycophancyTask(BehaviorTask):
     spec = TaskSpec(
         name="sycophancy",
-        primary_metric="recall_at_1pct_fpr",
+        primary_metric="recall_at_frozen_fpr",
         label_semantics={0: "non_sycophantic", 1: "sycophantic"},
         grouped_split_key="question_id",
         default_spans=["full_text", "pressure_context", "answer"],
-        notes="Primary task family. Distinguish agreement and praise via the condition field.",
+        notes="Primary on-policy family; positive labels require observed agreement with the pressure target.",
     )
 
     def load(self, path: Optional[str] = None) -> List[TaskExample]:
@@ -50,11 +50,12 @@ class SycophancyTask(BehaviorTask):
                     assistant_response=row.get("assistant_response"),
                     final_answer=row.get("final_answer"),
                     chain_of_thought=reasoning,
-                    metadata={
-                        "source": row.get("source", "jsonl"),
-                        "topic": row.get("topic"),
-                        "agreement_target": row.get("agreement_target"),
-                    },
+                    metadata=rollout_metadata(
+                        row,
+                        topic=row.get("topic"),
+                        agreement_target=row.get("agreement_target"),
+                    ),
+                    messages=row.get("messages", []),
                     segments=segments,
                 )
             )

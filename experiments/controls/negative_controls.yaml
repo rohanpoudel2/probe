@@ -3,10 +3,13 @@ control_results_root: phase6_negative_controls/results
 controls:
   - name: permute_labels
     control_type: permute_labels
+    apply_splits: train
     seed: 0
-  - name: shuffle_rows
-    control_type: shuffle_rows
+  - name: permute_features
+    control_type: permute_features
+    apply_splits: train
     seed: 1
   - name: gaussian_noise
     control_type: gaussian_noise
+    apply_splits: train
     seed: 2

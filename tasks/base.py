@@ -14,6 +14,8 @@ class TaskSpec:
     label_semantics: Dict[int, str]
     grouped_split_key: str = "question_id"
     default_spans: List[str] = field(default_factory=lambda: ["full_text", "answer"])
+    evaluation_only: bool = False
+    unavailable_baselines: Dict[str, str] = field(default_factory=dict)
     notes: str = ""
 
 
@@ -40,5 +42,7 @@ class BehaviorTask(ABC):
             "grouped_split_key": key,
             "n_groups": len(non_null_groups),
             "default_spans": list(self.spec.default_spans),
+            "evaluation_only": self.spec.evaluation_only,
+            "unavailable_baselines": dict(self.spec.unavailable_baselines),
             "notes": self.spec.notes,
         }

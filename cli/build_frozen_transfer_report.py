@@ -12,6 +12,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build no-leakage frozen transfer report from task_summary.csv")
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--selection_metric", default="eval_recall_at_1pct_fpr_mean")
+    parser.add_argument("--selection_k", type=int, default=None)
     args = parser.parse_args()
 
     summary_path = Path(args.results_dir) / "task_summary.csv"
@@ -19,7 +20,11 @@ def main() -> None:
         raise FileNotFoundError(f"Missing {summary_path}. Run aggregate_task_results.py first.")
 
     summary = pd.read_csv(summary_path)
-    selected = select_frozen_source_systems(summary, selection_metric=args.selection_metric)
+    selected = select_frozen_source_systems(
+        summary,
+        selection_metric=args.selection_metric,
+        selection_k=args.selection_k,
+    )
     report = apply_frozen_selection(summary, selected)
 
     outdir = Path(args.results_dir)
