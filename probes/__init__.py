@@ -7,6 +7,18 @@ from .prompted import PromptedProbe
 from .mahalanobis import MahalanobisProbe
 from .sae_probe import SAEProbe
 
+__all__ = [
+    "CosineProbe",
+    "LDAProbe",
+    "LogisticProbe",
+    "MahalanobisProbe",
+    "MassMeanProbe",
+    "Probe",
+    "PromptedProbe",
+    "SAEProbe",
+    "PROBE_REGISTRY",
+]
+
 PROBE_REGISTRY = {
     "P1_logistic": LogisticProbe,
     "P2_mass_mean": MassMeanProbe,

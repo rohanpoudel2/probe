@@ -70,3 +70,36 @@ def add_ci_columns(
             row[f"{metric}_n"] = int(np.sum(~np.isnan(vals)))
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def add_seed_summary_columns(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    metric_cols: list[str],
+) -> pd.DataFrame:
+    """Summarize few-shot-seed variability without claiming population CIs.
+
+    Population uncertainty must be computed from per-example predictions with
+    scenario-group resampling. The seed standard deviation here is diagnostic.
+    """
+
+    if df.empty:
+        return df.copy()
+    rows = []
+    for group_key, group in df.groupby(group_cols, dropna=False):
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        row = {column: value for column, value in zip(group_cols, group_key)}
+        row["uncertainty_unit"] = "few_shot_training_seed_only"
+        for metric in metric_cols:
+            if metric not in group:
+                continue
+            values = group[metric].astype(float).to_numpy()
+            finite = values[np.isfinite(values)]
+            row[f"{metric}_mean"] = float(np.mean(finite)) if len(finite) else float("nan")
+            row[f"{metric}_seed_std"] = float(np.std(finite)) if len(finite) else float("nan")
+            row[f"{metric}_seed_min"] = float(np.min(finite)) if len(finite) else float("nan")
+            row[f"{metric}_seed_max"] = float(np.max(finite)) if len(finite) else float("nan")
+            row[f"{metric}_n_seeds"] = int(len(finite))
+        rows.append(row)
+    return pd.DataFrame(rows)

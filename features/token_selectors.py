@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Tuple
 
 Span = Tuple[int, int]
 
@@ -16,5 +16,7 @@ def suffix_span(length: int, suffix_tokens: int) -> Span:
 
 def require_named_span(spans: Dict[str, Span], name: str) -> Span:
     if name not in spans:
-        raise KeyError(f"Missing span '{name}'. Available spans: {sorted(spans.keys())}")
+        raise KeyError(
+            f"Missing span '{name}'. Available spans: {sorted(spans.keys())}"
+        )
     return spans[name]

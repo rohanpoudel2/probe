@@ -1,0 +1,21 @@
+# Copy this file at protocol freeze and replace every selector with the exact
+# source-eval-selected systems before final-test predictions are inspected.
+comparisons:
+  - comparison_id: primary_white_box_gain_qwen3_4b_k8
+    description: Activation monitor improves frozen-threshold target TPR over the source-eval-selected registered black-box monitor.
+    common_filters:
+      model: Qwen3-4B
+      source_task: sycophancy
+      target_task: motivated_reasoning
+      k: 8
+      balance_mode: balanced
+    system_a:
+      probe: P1_logistic
+      layer: 15
+      view: answer
+    system_b:
+      probe: B2_text_embedding_logistic
+      layer: -2
+      view: transcript_text
+    split: target_test
+    metric: tpr

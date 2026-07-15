@@ -17,17 +17,39 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="Protocol benchmark config YAML")
     parser.add_argument("--results_dir", default=None, help="Optional override for artifact packaging input")
     parser.add_argument("--skip_validate", action="store_true")
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Optional execution device for model-backed baselines (auto|cpu|cuda|cuda:N|mps).",
+    )
     args = parser.parse_args()
 
     if not args.skip_validate:
-        _run([sys.executable, "validate_multimodel_config.py", "--config", args.config, "--check_paths"])
-    _run([sys.executable, "run_protocol_multimodel_benchmark.py", "--config", args.config])
+        _run([sys.executable, "-m", "cli.validate_multimodel_config", "--config", args.config, "--check_paths"])
+    protocol_cmd = [
+        sys.executable,
+        "-m",
+        "cli.run_protocol_multimodel_benchmark",
+        "--config",
+        args.config,
+    ]
+    if args.device is not None:
+        protocol_cmd.extend(["--device", args.device])
+    _run(protocol_cmd)
 
     results_dir = args.results_dir
     if results_dir is None:
         cfg = yaml.safe_load(Path(args.config).read_text())
         results_dir = str(cfg["results_dir"])
-    _run([sys.executable, "package_paper_artifacts.py", "--results_dir", results_dir])
+    _run(
+        [
+            sys.executable,
+            "-m",
+            "cli.package_paper_artifacts",
+            "--results_dir",
+            results_dir,
+        ]
+    )
 
 
 if __name__ == "__main__":

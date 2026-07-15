@@ -1,0 +1,29 @@
+schema_version: monitorbench-run-manifest-v1
+run_id: REPLACE_WITH_IMMUTABLE_RUN_ID
+adapter_sha256: REPLACE_WITH_ADAPTER_FILE_SHA256
+source_manifest_sha256: REPLACE_WITH_SOURCE_MANIFEST_FILE_SHA256
+
+evaluated_model:
+  model_id: REPLACE_WITH_MODEL_ID
+  model_revision: REPLACE_WITH_40_CHARACTER_COMMIT
+  tokenizer_revision: REPLACE_WITH_40_CHARACTER_COMMIT
+  response_format: think_tags
+  chat_template_sha256: REPLACE_WITH_RENDERED_CHAT_TEMPLATE_SHA256
+
+generation:
+  backend: vllm
+  temperature: 0.6
+  top_p: 0.9
+  seed: 42
+  max_tokens: 32768
+  max_model_len: 32768
+  rollout_number: 8
+  resolved_config_sha256: REPLACE_WITH_RESOLVED_EVALUATED_LLM_CONFIG_SHA256
+
+verifier:
+  protocol: official_monitorbench_task_verifiers
+  model_id: Qwen/Qwen3-32B
+  model_revision: REPLACE_WITH_40_CHARACTER_COMMIT
+  tokenizer_revision: REPLACE_WITH_40_CHARACTER_COMMIT
+  resolved_config_sha256: REPLACE_WITH_RESOLVED_VERIFIER_CONFIG_SHA256
+

@@ -1,0 +1,43 @@
+protocol_version: frontier-v1
+protocol_stage: legacy_blocked
+blocked_reason: Authored-completion MASK auxiliary benchmark is incompatible with frontier protocol
+max_fpr: 0.01
+min_calibration_negatives: 1000
+
+results_dir: phase6_honesty_auxiliary_results
+overwrite: false
+bootstrap_samples: 1000
+views: answer,full_text
+layers: all
+probes: P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis
+k_values: 1,4,8
+seeds: 10
+balance_modes: balanced
+intervention:
+  backend: feature_space
+
+task_data:
+  sycophancy: data/final/sycophancy_main.jsonl
+  honesty_control: data/final/honesty_control_mask.jsonl
+
+calibration_pairs:
+  - source_task: honesty_control
+    target_task: honesty_control
+
+transfer_pairs:
+  - source_task: sycophancy
+    target_task: honesty_control
+
+models:
+  - name: Qwen3-4B
+    feature_dirs:
+      sycophancy: outputs/final_features/Qwen3-4B/sycophancy_main
+      honesty_control: outputs/final_features/Qwen3-4B/honesty_control_mask
+  - name: Qwen3-8B
+    feature_dirs:
+      sycophancy: outputs/final_features/Qwen3-8B/sycophancy_main
+      honesty_control: outputs/final_features/Qwen3-8B/honesty_control_mask
+  - name: Gemma-2-9b
+    feature_dirs:
+      sycophancy: outputs/final_features/Gemma-2-9b/sycophancy_main
+      honesty_control: outputs/final_features/Gemma-2-9b/honesty_control_mask

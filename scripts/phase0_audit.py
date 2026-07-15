@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# This executable script adds the repository root before importing project modules.
+# ruff: noqa: E402
+
 import argparse
 import json
 import sys
@@ -29,7 +32,7 @@ def main() -> None:
     enabled = [primary] + list(transfer) + list(stress) + list(auxiliary)
     enabled = [x for x in enabled if x]
 
-    print("=== Phase 0 scope lock ===")
+    print("=== Frontier protocol scope lock ===")
     print(f"paper_track: {cfg.get('project', {}).get('target_track', 'unknown')}")
     print(f"primary task: {primary}")
     print(f"transfer tasks: {transfer}")
@@ -47,11 +50,18 @@ def main() -> None:
         print(json.dumps(task.spec.__dict__, indent=2))
         print()
 
-    print("=== Key Phase 0 decisions ===")
-    print("1. Main paper direction centers sycophancy, transfers to motivated reasoning, and stresses on CoT distortion.")
-    print("2. MASK-style honesty analysis is treated as an auxiliary control, not part of the main sycophancy benchmark.")
-    print("3. Span-aware features and steering interfaces are first-class parts of the benchmark.")
-    print("4. Grouped splitting by question_id is the default assumption for task families.")
+    print("=== Key protocol decisions ===")
+    print(
+        "1. The primary estimand is white-box gain over the strongest registered transcript monitor."
+    )
+    print(
+        "2. All behavior data must be generated on-policy and labeled after generation."
+    )
+    print("3. Thresholds are frozen on dedicated benign calibration traffic at 1% FPR.")
+    print("4. Scenario groups, not rows or rollouts, are the independent units.")
+    print(
+        "5. Steering is deferred until monitoring survives leakage and black-box baselines."
+    )
 
 
 if __name__ == "__main__":

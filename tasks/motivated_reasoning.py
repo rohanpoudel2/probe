@@ -4,17 +4,17 @@ from typing import List, Optional
 
 from data.schema import TaskExample
 from tasks.base import BehaviorTask, TaskSpec
-from tasks.jsonl_utils import read_jsonl, require_fields
+from tasks.jsonl_utils import read_jsonl, require_fields, rollout_metadata
 
 
 class MotivatedReasoningTask(BehaviorTask):
     spec = TaskSpec(
         name="motivated_reasoning",
-        primary_metric="auroc",
+        primary_metric="recall_at_frozen_fpr",
         label_semantics={0: "unbiased_or_control", 1: "motivated_reasoning"},
         grouped_split_key="question_id",
         default_spans=["full_text", "hint_context", "reasoning", "reasoning_early", "reasoning_mid", "reasoning_late", "answer"],
-        notes="Transfer family with explicit support for before-CoT and after-CoT analysis.",
+        notes="Transfer family; labels are assigned from generated answers under biased versus neutral conditions.",
     )
 
     def load(self, path: Optional[str] = None) -> List[TaskExample]:
@@ -49,10 +49,10 @@ class MotivatedReasoningTask(BehaviorTask):
                     assistant_response=row.get("assistant_response"),
                     final_answer=row.get("final_answer"),
                     chain_of_thought=reasoning,
-                    metadata={
-                        "source": row.get("source", "jsonl"),
-                        "target_conclusion": row.get("target_conclusion"),
-                    },
+                    metadata=rollout_metadata(
+                        row, target_conclusion=row.get("target_conclusion")
+                    ),
+                    messages=row.get("messages", []),
                     segments=segments,
                 )
             )

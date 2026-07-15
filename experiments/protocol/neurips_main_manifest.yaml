@@ -1,3 +1,5 @@
+protocol_version: frontier-v1
+protocol_stage: pilot
 results_dir: phase5_neurips_main_results
 overwrite: false
 bootstrap_samples: 1000
@@ -7,6 +9,34 @@ probes: P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis
 k_values: 1,4,8
 seeds: 10
 balance_modes: balanced
+max_fpr: 0.01
+min_calibration_negatives: 1000
+run_steering: false
+run_black_box_baselines: false
+run_falsification_suite: false
+falsification_registry: experiments/protocol/falsification_registry.yaml
+black_box_baselines:
+  - B1_text_tfidf
+  - B2_text_embedding_logistic
+  - B3_llm_judge_zero_shot
+  - B3_llm_judge_few_shot
+  - B4_output_confidence_logistic
+text_embedding_model_lock: experiments/baselines/text_embedding_models.yaml
+text_embedding_model_key: qwen3_embedding_0_6b
+text_embedding_views:
+  - prompt_text
+  - answer_text
+  - transcript_text
+llm_judge_model_lock: experiments/baselines/llm_judge_models.yaml
+llm_judge_model_key: phi4_14b
+llm_judge_batch_size: 8
+llm_judge_views:
+  - prompt_text
+  - answer_text
+  - transcript_text
+llm_judge_modes:
+  - zero_shot
+  - few_shot
 
 calibration_pairs:
   - source_task: sycophancy
@@ -20,11 +50,17 @@ transfer_pairs:
 
 models:
   - name: Qwen3-4B
+    model_id: Qwen/Qwen3-4B
+    model_revision: 1cfa9a7208912126459214e8b04321603b3df60c
+    family: Qwen3
     feature_dirs:
       sycophancy: outputs/final_features/Qwen3-4B/sycophancy_main
       motivated_reasoning: outputs/final_features/Qwen3-4B/motivated_reasoning_main
       cot_distortion: outputs/final_features/Qwen3-4B/cot_distortion_main
   - name: Qwen3-8B
+    model_id: Qwen/Qwen3-8B
+    model_revision: b968826d9c46dd6066d109eabc6255188de91218
+    family: Qwen3
     feature_dirs:
       sycophancy: outputs/final_features/Qwen3-8B/sycophancy_main
       motivated_reasoning: outputs/final_features/Qwen3-8B/motivated_reasoning_main

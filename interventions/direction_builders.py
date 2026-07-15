@@ -26,6 +26,9 @@ def probe_direction(probe, X: np.ndarray, y: np.ndarray) -> np.ndarray:
     clf = getattr(probe, "_clf", None)
     if clf is not None and hasattr(clf, "coef_"):
         coef = np.asarray(clf.coef_).reshape(-1)
+        scaler = getattr(probe, "_scaler", None)
+        if scaler is not None and getattr(scaler, "scale_", None) is not None:
+            coef = coef / np.maximum(np.asarray(scaler.scale_), 1e-12)
         if coef.size:
             return normalize_direction(coef)
 

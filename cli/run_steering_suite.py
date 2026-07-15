@@ -15,13 +15,13 @@ import matplotlib.pyplot as plt
 
 from cli.run_task_sweep import _bundle_suffix
 from data.task_feature_loading import load_feature_bundle
-from evaluation.metrics import compute_auroc, compute_recall_at_fpr
 from interventions.direction_builders import probe_direction
 from interventions.online_steering import steering_hooks
 from interventions.steering import SteeringConfig, steer_activation
 from task_benchmark import TASK_PROBE_REGISTRY
 from task_benchmark.sampling import sample_few_shot_train
 from tasks import TASK_REGISTRY
+from cli.common import resolve_torch_device
 
 
 def _parse_alpha_values(raw, fallback: list[float]) -> list[float]:
@@ -47,7 +47,10 @@ def _merged_task_data(cfg: dict) -> dict[str, str]:
 
 
 def _model_feature_map(cfg: dict) -> dict[str, dict]:
-    return {model_cfg["name"]: model_cfg["feature_dirs"] for model_cfg in cfg.get("models", [])}
+    return {
+        model_cfg["name"]: model_cfg["feature_dirs"]
+        for model_cfg in cfg.get("models", [])
+    }
 
 
 def _make_probe(probe_name: str, probe_cls, cfg: dict):
@@ -61,7 +64,9 @@ def _make_probe(probe_name: str, probe_cls, cfg: dict):
     return probe_cls()
 
 
-def _quantile_threshold(scores: np.ndarray, labels: np.ndarray, quantile: float) -> float:
+def _quantile_threshold(
+    scores: np.ndarray, labels: np.ndarray, quantile: float
+) -> float:
     neg_scores = scores[labels == 0]
     if len(neg_scores) == 0:
         return float(np.quantile(scores, quantile))
@@ -106,9 +111,13 @@ def _build_reference_maps(examples) -> dict[str, dict[str, list[str]]]:
         refs.setdefault(ex.question_id or ex.example_id, {"clean": [], "risky": []})
         target = "risky" if ex.label == 1 else "clean"
         if ex.final_answer:
-            refs[ex.question_id or ex.example_id][target].append(_normalize_text(ex.final_answer))
+            refs[ex.question_id or ex.example_id][target].append(
+                _normalize_text(ex.final_answer)
+            )
         if ex.assistant_response:
-            refs[ex.question_id or ex.example_id][target].append(_normalize_text(ex.assistant_response))
+            refs[ex.question_id or ex.example_id][target].append(
+                _normalize_text(ex.assistant_response)
+            )
     return refs
 
 
@@ -136,23 +145,36 @@ def _build_prompt(example) -> str:
     return "\n\n".join(parts)
 
 
-def _load_model_and_tokenizer(model_name: str):
-    import torch
+def _load_model_and_tokenizer(model_name: str, *, device: str = "auto"):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    resolved_device = resolve_torch_device(device)
+    model_kwargs = {"torch_dtype": "auto"}
+    if resolved_device == "auto":
+        model_kwargs["device_map"] = "auto"
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype="auto",
-        device_map="auto",
+        **model_kwargs,
     )
+    if resolved_device != "auto":
+        model = model.to(resolved_device)
     model.eval()
     return model, tokenizer
 
 
-def _generate_response(model, tokenizer, prompt: str, layer: int, direction: np.ndarray, alpha: float, threshold: float | None, max_new_tokens: int) -> tuple[str, dict]:
+def _generate_response(
+    model,
+    tokenizer,
+    prompt: str,
+    layer: int,
+    direction: np.ndarray,
+    alpha: float,
+    threshold: float | None,
+    max_new_tokens: int,
+) -> tuple[str, dict]:
     import torch
 
     encoded = tokenizer(prompt, return_tensors="pt")
@@ -169,7 +191,9 @@ def _generate_response(model, tokenizer, prompt: str, layer: int, direction: np.
                 pad_token_id=tokenizer.eos_token_id,
             )
         else:
-            with steering_hooks(model, [layer], direction=direction, alpha=alpha, threshold=threshold) as stats:
+            with steering_hooks(
+                model, [layer], direction=direction, alpha=alpha, threshold=threshold
+            ) as stats:
                 generated = model.generate(
                     **encoded,
                     max_new_tokens=max_new_tokens,
@@ -182,12 +206,14 @@ def _generate_response(model, tokenizer, prompt: str, layer: int, direction: np.
                     "mean_score": stats.mean_score,
                 }
 
-    new_tokens = generated[0, encoded["input_ids"].shape[1]:]
+    new_tokens = generated[0, encoded["input_ids"].shape[1] :]
     text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
     return text, stats_payload
 
 
-def _load_online_examples(task_name: str, task_data_map: dict[str, str], example_ids: list[str]):
+def _load_online_examples(
+    task_name: str, task_data_map: dict[str, str], example_ids: list[str]
+):
     task_path = task_data_map.get(task_name)
     if not task_path:
         raise FileNotFoundError(f"Missing task_data path for {task_name}")
@@ -198,7 +224,14 @@ def _load_online_examples(task_name: str, task_data_map: dict[str, str], example
     return examples, selected
 
 
-def _run_feature_space(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: list[float], steering_seed: int, threshold_quantile: float) -> pd.DataFrame:
+def _run_feature_space(
+    cfg: dict,
+    results_dir: Path,
+    best: pd.DataFrame,
+    alpha_values: list[float],
+    steering_seed: int,
+    threshold_quantile: float,
+) -> pd.DataFrame:
     feature_map = _model_feature_map(cfg)
     rows = []
     for row in best.itertuples(index=False):
@@ -216,18 +249,35 @@ def _run_feature_space(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_v
 
         suffix = _bundle_suffix(probe_cls)
         try:
-            source_train = load_feature_bundle(source_dir, "train", int(row.layer), cache_suffix=suffix)
-            source_eval = load_feature_bundle(source_dir, "eval", int(row.layer), cache_suffix=suffix)
-            target_test = load_feature_bundle(target_dir, "test", int(row.layer), cache_suffix=suffix)
+            source_train = load_feature_bundle(
+                source_dir, "train", int(row.layer), cache_suffix=suffix
+            )
+            source_eval = load_feature_bundle(
+                source_dir, "eval", int(row.layer), cache_suffix=suffix
+            )
+            target_test = load_feature_bundle(
+                target_dir, "test", int(row.layer), cache_suffix=suffix
+            )
         except FileNotFoundError:
             continue
-        if row.view not in source_train or row.view not in source_eval or row.view not in target_test:
+        if (
+            row.view not in source_train
+            or row.view not in source_eval
+            or row.view not in target_test
+        ):
             continue
 
         X_train = source_train[row.view]
         y_train = source_train["labels"]
         try:
-            X_fs, y_fs = sample_few_shot_train(X_train, y_train, k=int(row.k), seed=steering_seed, balance_mode=row.balance_mode)
+            X_fs, y_fs = sample_few_shot_train(
+                X_train,
+                y_train,
+                k=int(row.k),
+                seed=steering_seed,
+                balance_mode=row.balance_mode,
+                group_ids=source_train["question_ids"],
+            )
         except ValueError:
             continue
 
@@ -239,28 +289,65 @@ def _run_feature_space(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_v
             continue
 
         eval_scores = _direction_scores(source_eval[row.view], direction)
-        threshold = _quantile_threshold(eval_scores, source_eval["labels"], threshold_quantile)
+        threshold = _quantile_threshold(
+            eval_scores, source_eval["labels"], threshold_quantile
+        )
         X_target = target_test[row.view]
         y_target = target_test["labels"]
         base_scores = _direction_scores(X_target, direction)
-        base_recall = float(np.mean(base_scores[y_target == 1] > threshold)) if np.any(y_target == 1) else float("nan")
-        base_fpr = float(np.mean(base_scores[y_target == 0] > threshold)) if np.any(y_target == 0) else float("nan")
-        base_pos_mean = float(np.mean(base_scores[y_target == 1])) if np.any(y_target == 1) else float("nan")
-        base_neg_mean = float(np.mean(base_scores[y_target == 0])) if np.any(y_target == 0) else float("nan")
+        base_recall = (
+            float(np.mean(base_scores[y_target == 1] > threshold))
+            if np.any(y_target == 1)
+            else float("nan")
+        )
+        base_fpr = (
+            float(np.mean(base_scores[y_target == 0] > threshold))
+            if np.any(y_target == 0)
+            else float("nan")
+        )
+        base_pos_mean = (
+            float(np.mean(base_scores[y_target == 1]))
+            if np.any(y_target == 1)
+            else float("nan")
+        )
+        base_neg_mean = (
+            float(np.mean(base_scores[y_target == 0]))
+            if np.any(y_target == 0)
+            else float("nan")
+        )
 
         for steering_mode in ["unconditional", "threshold_triggered"]:
             mode_threshold = None if steering_mode == "unconditional" else threshold
             for alpha in alpha_values:
                 cfg_obj = SteeringConfig(alpha=float(alpha), threshold=mode_threshold)
                 steered_X = np.stack(
-                    [steer_activation(vec, direction, float(score), cfg_obj) for vec, score in zip(X_target, base_scores)],
+                    [
+                        steer_activation(vec, direction, float(score), cfg_obj)
+                        for vec, score in zip(X_target, base_scores)
+                    ],
                     axis=0,
                 )
                 steered_scores = _direction_scores(steered_X, direction)
-                steered_recall = float(np.mean(steered_scores[y_target == 1] > threshold)) if np.any(y_target == 1) else float("nan")
-                steered_fpr = float(np.mean(steered_scores[y_target == 0] > threshold)) if np.any(y_target == 0) else float("nan")
-                steered_pos_mean = float(np.mean(steered_scores[y_target == 1])) if np.any(y_target == 1) else float("nan")
-                steered_neg_mean = float(np.mean(steered_scores[y_target == 0])) if np.any(y_target == 0) else float("nan")
+                steered_recall = (
+                    float(np.mean(steered_scores[y_target == 1] > threshold))
+                    if np.any(y_target == 1)
+                    else float("nan")
+                )
+                steered_fpr = (
+                    float(np.mean(steered_scores[y_target == 0] > threshold))
+                    if np.any(y_target == 0)
+                    else float("nan")
+                )
+                steered_pos_mean = (
+                    float(np.mean(steered_scores[y_target == 1]))
+                    if np.any(y_target == 1)
+                    else float("nan")
+                )
+                steered_neg_mean = (
+                    float(np.mean(steered_scores[y_target == 0]))
+                    if np.any(y_target == 0)
+                    else float("nan")
+                )
                 rows.append(
                     {
                         "steering_backend": "feature_space",
@@ -281,13 +368,23 @@ def _run_feature_space(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_v
                         "fpr_change": steered_fpr - base_fpr,
                         "positive_score_shift": steered_pos_mean - base_pos_mean,
                         "negative_score_shift": steered_neg_mean - base_neg_mean,
-                        "selectivity_score": (base_recall - steered_recall) - abs(steered_fpr - base_fpr),
+                        "selectivity_score": (base_recall - steered_recall)
+                        - abs(steered_fpr - base_fpr),
                     }
                 )
     return pd.DataFrame(rows)
 
 
-def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: list[float], steering_seed: int, threshold_quantile: float, max_new_tokens: int) -> pd.DataFrame:
+def _run_online(
+    cfg: dict,
+    results_dir: Path,
+    best: pd.DataFrame,
+    alpha_values: list[float],
+    steering_seed: int,
+    threshold_quantile: float,
+    max_new_tokens: int,
+    model_device: str,
+) -> pd.DataFrame:
     feature_map = _model_feature_map(cfg)
     task_data_map = _merged_task_data(cfg)
     model_cache = {}
@@ -308,9 +405,15 @@ def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: 
 
         suffix = _bundle_suffix(probe_cls)
         try:
-            source_train = load_feature_bundle(source_dir, "train", int(row.layer), cache_suffix=suffix)
-            source_eval = load_feature_bundle(source_dir, "eval", int(row.layer), cache_suffix=suffix)
-            target_test = load_feature_bundle(target_dir, "test", int(row.layer), cache_suffix=suffix)
+            source_train = load_feature_bundle(
+                source_dir, "train", int(row.layer), cache_suffix=suffix
+            )
+            source_eval = load_feature_bundle(
+                source_dir, "eval", int(row.layer), cache_suffix=suffix
+            )
+            target_test = load_feature_bundle(
+                target_dir, "test", int(row.layer), cache_suffix=suffix
+            )
         except FileNotFoundError:
             continue
         if row.view not in source_train or row.view not in source_eval:
@@ -319,7 +422,14 @@ def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: 
         X_train = source_train[row.view]
         y_train = source_train["labels"]
         try:
-            X_fs, y_fs = sample_few_shot_train(X_train, y_train, k=int(row.k), seed=steering_seed, balance_mode=row.balance_mode)
+            X_fs, y_fs = sample_few_shot_train(
+                X_train,
+                y_train,
+                k=int(row.k),
+                seed=steering_seed,
+                balance_mode=row.balance_mode,
+                group_ids=source_train["question_ids"],
+            )
         except ValueError:
             continue
 
@@ -333,7 +443,9 @@ def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: 
             continue
 
         eval_scores = _direction_scores(source_eval[row.view], direction)
-        threshold = _quantile_threshold(eval_scores, source_eval["labels"], threshold_quantile)
+        threshold = _quantile_threshold(
+            eval_scores, source_eval["labels"], threshold_quantile
+        )
 
         try:
             all_target_examples, selected_examples = _load_online_examples(
@@ -349,7 +461,9 @@ def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: 
 
         if row.model not in model_cache:
             try:
-                model_cache[row.model] = _load_model_and_tokenizer(row.model)
+                model_cache[row.model] = _load_model_and_tokenizer(
+                    row.model, device=model_device
+                )
             except Exception:
                 continue
         model, tokenizer = model_cache[row.model]
@@ -370,7 +484,9 @@ def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: 
             baseline_cache[ex.example_id] = (response, stats)
 
         for steering_mode in ["unconditional", "threshold_triggered"]:
-            mode_threshold = None if steering_mode == "unconditional" else float(threshold)
+            mode_threshold = (
+                None if steering_mode == "unconditional" else float(threshold)
+            )
             for alpha in alpha_values:
                 risky_base = []
                 risky_steered = []
@@ -391,7 +507,9 @@ def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: 
                         threshold=mode_threshold,
                         max_new_tokens=max_new_tokens,
                     )
-                    refs = ref_map.get(ex.question_id or ex.example_id, {"clean": [], "risky": []})
+                    refs = ref_map.get(
+                        ex.question_id or ex.example_id, {"clean": [], "risky": []}
+                    )
                     base_risky = float(_match_any(base_text, refs["risky"]))
                     steered_risky = float(_match_any(steered_text, refs["risky"]))
                     base_clean = float(_match_any(base_text, refs["clean"]))
@@ -403,15 +521,35 @@ def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: 
                         clean_base.append(base_clean)
                         clean_steered.append(steered_clean)
                     if stats["n_forward_calls"] > 0:
-                        apply_rates.append(stats["n_applied"] / stats["n_forward_calls"])
+                        apply_rates.append(
+                            stats["n_applied"] / stats["n_forward_calls"]
+                        )
                         live_scores.append(stats["mean_score"])
 
-                base_risky_rate = float(np.mean(risky_base)) if risky_base else float("nan")
-                steered_risky_rate = float(np.mean(risky_steered)) if risky_steered else float("nan")
-                base_clean_rate = float(np.mean(clean_base)) if clean_base else float("nan")
-                steered_clean_rate = float(np.mean(clean_steered)) if clean_steered else float("nan")
-                risk_suppression = base_risky_rate - steered_risky_rate if not np.isnan(base_risky_rate) and not np.isnan(steered_risky_rate) else float("nan")
-                clean_retention_drop = base_clean_rate - steered_clean_rate if not np.isnan(base_clean_rate) and not np.isnan(steered_clean_rate) else float("nan")
+                base_risky_rate = (
+                    float(np.mean(risky_base)) if risky_base else float("nan")
+                )
+                steered_risky_rate = (
+                    float(np.mean(risky_steered)) if risky_steered else float("nan")
+                )
+                base_clean_rate = (
+                    float(np.mean(clean_base)) if clean_base else float("nan")
+                )
+                steered_clean_rate = (
+                    float(np.mean(clean_steered)) if clean_steered else float("nan")
+                )
+                risk_suppression = (
+                    base_risky_rate - steered_risky_rate
+                    if not np.isnan(base_risky_rate)
+                    and not np.isnan(steered_risky_rate)
+                    else float("nan")
+                )
+                clean_retention_drop = (
+                    base_clean_rate - steered_clean_rate
+                    if not np.isnan(base_clean_rate)
+                    and not np.isnan(steered_clean_rate)
+                    else float("nan")
+                )
                 rows.append(
                     {
                         "steering_backend": "online_hook",
@@ -434,18 +572,28 @@ def _run_online(cfg: dict, results_dir: Path, best: pd.DataFrame, alpha_values: 
                         "clean_retention_drop": clean_retention_drop,
                         "suppression_at_threshold": risk_suppression,
                         "fpr_change": clean_retention_drop,
-                        "mean_hook_apply_rate": float(np.mean(apply_rates)) if apply_rates else float("nan"),
-                        "mean_live_score": float(np.mean(live_scores)) if live_scores else float("nan"),
+                        "mean_hook_apply_rate": float(np.mean(apply_rates))
+                        if apply_rates
+                        else float("nan"),
+                        "mean_live_score": float(np.mean(live_scores))
+                        if live_scores
+                        else float("nan"),
                         "n_positive_examples": len(risky_base),
                         "n_negative_examples": len(clean_base),
-                        "selectivity_score": risk_suppression - max(clean_retention_drop, 0.0) if not np.isnan(risk_suppression) and not np.isnan(clean_retention_drop) else float("nan"),
+                        "selectivity_score": risk_suppression
+                        - max(clean_retention_drop, 0.0)
+                        if not np.isnan(risk_suppression)
+                        and not np.isnan(clean_retention_drop)
+                        else float("nan"),
                     }
                 )
     return pd.DataFrame(rows)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run steering experiments from best task systems")
+    parser = argparse.ArgumentParser(
+        description="Run steering experiments from best task systems"
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--results_dir", default=None)
     parser.add_argument("--selection_file", default="task_best_view_layer.csv")
@@ -454,6 +602,11 @@ def main() -> None:
     parser.add_argument("--alpha_values", default=None)
     parser.add_argument("--backend", default=None, choices=["online", "feature_space"])
     parser.add_argument("--max_new_tokens", type=int, default=32)
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Execution device: auto|cpu|cuda|cuda:N|mps",
+    )
     args = parser.parse_args()
 
     cfg = _load_cfg(args.config)
@@ -467,22 +620,43 @@ def main() -> None:
         print("Empty best-system file; skipping steering.")
         return
 
-    alpha_values = _parse_alpha_values(args.alpha_values, cfg.get("intervention", {}).get("alpha_values", [0.25, 0.5, 1.0, 2.0]))
+    alpha_values = _parse_alpha_values(
+        args.alpha_values,
+        cfg.get("intervention", {}).get("alpha_values", [0.25, 0.5, 1.0, 2.0]),
+    )
     backend = args.backend or cfg.get("intervention", {}).get("backend", "online")
     if backend == "online" and best["model"].astype(str).str.startswith("dummy-").any():
         backend = "feature_space"
 
     if backend == "online":
-        out = _run_online(cfg, results_dir, best, alpha_values, args.steering_seed, args.threshold_quantile, args.max_new_tokens)
+        out = _run_online(
+            cfg,
+            results_dir,
+            best,
+            alpha_values,
+            args.steering_seed,
+            args.threshold_quantile,
+            args.max_new_tokens,
+            args.device,
+        )
     else:
-        out = _run_feature_space(cfg, results_dir, best, alpha_values, args.steering_seed, args.threshold_quantile)
+        out = _run_feature_space(
+            cfg,
+            results_dir,
+            best,
+            alpha_values,
+            args.steering_seed,
+            args.threshold_quantile,
+        )
 
     out_path = results_dir / "task_steering_summary.csv"
     out.to_csv(out_path, index=False)
     print(f"saved {out_path}")
 
     if not out.empty:
-        idx = out.groupby(["model", "source_task", "target_task", "steering_mode"], dropna=False)["selectivity_score"].idxmax()
+        idx = out.groupby(
+            ["model", "source_task", "target_task", "steering_mode"], dropna=False
+        )["selectivity_score"].idxmax()
         best_out = out.loc[idx].reset_index(drop=True)
     else:
         best_out = pd.DataFrame()

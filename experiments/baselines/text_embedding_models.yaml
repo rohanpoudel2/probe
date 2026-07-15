@@ -1,0 +1,17 @@
+schema_version: text-embedding-model-lock-v1
+
+models:
+  qwen3_embedding_0_6b:
+    model_id: Qwen/Qwen3-Embedding-0.6B
+    model_revision: 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+    tokenizer_revision: 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+    pooling: last
+    padding_side: left
+    normalize: true
+    max_length: 8192
+    instruction: Represent this AI interaction for behavior-monitoring classification.
+    instruction_format: "Instruct: {instruction}\nQuery:{text}"
+    notes:
+      - The revision is immutable and shared by model and tokenizer.
+      - Last-token pooling, left padding, and L2 normalization follow the official model card.
+      - The instruction is task-agnostic so source-to-target transfer uses one embedding space.

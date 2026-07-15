@@ -22,17 +22,23 @@ def _latex_from_csv(csv_path: Path, tex_path: Path, nrows: int | None = None) ->
         return
     if nrows is not None:
         df = df.head(nrows)
-    tex_path.write_text(df.to_latex(index=False, escape=False, float_format=lambda x: f"{x:.3f}"))
+    tex_path.write_text(
+        df.to_latex(index=False, escape=False, float_format=lambda x: f"{x:.3f}")
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Package final draft assets for submission")
+    parser = argparse.ArgumentParser(
+        description="Package final draft assets for submission"
+    )
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--output_dir", default=None)
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
-    out_root = Path(args.output_dir) if args.output_dir else results_dir / "final_draft_assets"
+    out_root = (
+        Path(args.output_dir) if args.output_dir else results_dir / "final_draft_assets"
+    )
     tables = out_root / "tables"
     figures = out_root / "figures"
     notes = out_root / "notes"
@@ -46,6 +52,8 @@ def main() -> None:
         "task_same_task_calibration.csv",
         "task_fsei.csv",
         "task_significance.csv",
+        "falsification_slices.csv",
+        "falsification_significance.csv",
         "task_geometry_summary.csv",
         "task_direction_alignment.csv",
         "task_steering_best.csv",
@@ -55,9 +63,33 @@ def main() -> None:
     ]
     for name in csvs:
         _copy_if_exists(results_dir / name, tables / name)
-        _latex_from_csv(results_dir / name, tables / name.replace(".csv", ".tex"), nrows=30)
+        _latex_from_csv(
+            results_dir / name, tables / name.replace(".csv", ".tex"), nrows=30
+        )
 
-    for name in ["camera_ready_cross_model.png", "camera_ready_k_sweep.png", "task_transfer_matrix.png", "task_steering_tradeoff.png"]:
+    provenance = out_root / "provenance"
+    _copy_if_exists(
+        results_dir / "falsification_shift_predictions.jsonl",
+        provenance / "falsification_shift_predictions.jsonl",
+    )
+    _copy_if_exists(
+        results_dir / "falsification_pair_predictions.jsonl",
+        provenance / "falsification_pair_predictions.jsonl",
+    )
+    falsification_manifests = results_dir / "falsification_manifests"
+    if falsification_manifests.exists():
+        shutil.copytree(
+            falsification_manifests,
+            provenance / "falsification_manifests",
+            dirs_exist_ok=True,
+        )
+
+    for name in [
+        "camera_ready_cross_model.png",
+        "camera_ready_k_sweep.png",
+        "task_transfer_matrix.png",
+        "task_steering_tradeoff.png",
+    ]:
         _copy_if_exists(results_dir / name, figures / name)
 
     manifest_lines = [
@@ -67,6 +99,8 @@ def main() -> None:
         "1. task_cross_model_table.tex",
         "2. task_cross_task_transfer.tex",
         "3. sanity_checks.tex",
+        "4. falsification_slices.tex",
+        "5. falsification_significance.tex",
         "",
         "Suggested appendix tables:",
         "1. task_significance.tex",
@@ -74,6 +108,7 @@ def main() -> None:
         "3. task_steering_best.tex",
         "4. negative_control_report.tex",
         "5. ablation_summary.tex",
+        "6. falsification shift/pair predictions and frozen manifests (provenance/)",
         "",
         "Suggested figures:",
         "1. camera_ready_cross_model.png",
