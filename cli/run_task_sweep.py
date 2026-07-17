@@ -357,8 +357,15 @@ def main() -> None:
         return bundle_cache[key]
 
     calibration_dir = args.calibration_dir or args.source_dir
+    summary_rows_written = 0
+    summary_fsync_every = 128
     with out_file.open("a", encoding="utf-8") as summary_handle:
         for layer in layers:
+            # Feature bundles are keyed by (dir, split, layer, suffix) and never
+            # reused across layers, so release the previous layer's arrays before
+            # loading this one. This bounds host/unified memory to a single
+            # layer's bundles instead of accumulating every layer's.
+            bundle_cache.clear()
             for probe_name in probe_names:
                 probe_cls = TASK_PROBE_REGISTRY[probe_name]
                 suffix = _bundle_suffix(probe_cls)
@@ -468,9 +475,20 @@ def main() -> None:
                                     failed += 1
 
                                 summary_handle.write(json.dumps(row, sort_keys=True) + "\n")
+                                # Flush every row so a resumed process sees every
+                                # completed run, but only force the summary to
+                                # stable storage periodically: prediction files
+                                # are written atomically-and-fsynced before their
+                                # summary row, and any summary tail lost to a hard
+                                # crash is recomputed on resume.
                                 summary_handle.flush()
-                                os.fsync(summary_handle.fileno())
+                                summary_rows_written += 1
+                                if summary_rows_written % summary_fsync_every == 0:
+                                    os.fsync(summary_handle.fileno())
                                 existing_run_ids.add(run_id)
+        # Durably persist the full summary once every run has been recorded.
+        summary_handle.flush()
+        os.fsync(summary_handle.fileno())
 
     print(
         f"completed {completed} valid runs; failed {failed}; "

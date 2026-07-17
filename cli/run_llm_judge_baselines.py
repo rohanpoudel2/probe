@@ -238,13 +238,17 @@ class JudgeRuntime:
         max_length = int(self.spec["max_length"])
         for start in range(0, len(rendered), self.batch_size):
             batch_texts = rendered[start : start + self.batch_size]
-            untruncated = self.tokenizer(
+            encoded = self.tokenizer(
                 batch_texts,
                 add_special_tokens=False,
-                padding=False,
+                padding=True,
                 truncation=False,
-            )["input_ids"]
-            lengths = [len(ids) for ids in untruncated]
+                return_tensors="pt",
+            )
+            # Truncation is disabled, so every real token is retained and the
+            # attention mask sums to the exact untruncated length. This avoids a
+            # redundant second full tokenization pass over each batch.
+            lengths = [int(value) for value in encoded["attention_mask"].sum(dim=1).tolist()]
             too_long = [
                 start + i for i, length in enumerate(lengths) if length > max_length
             ]
@@ -253,25 +257,33 @@ class JudgeRuntime:
                     f"LLM-judge prompts {too_long[:5]} exceed registered max_length={max_length}; "
                     "truncation is prohibited"
                 )
-            encoded = self.tokenizer(
-                batch_texts,
-                add_special_tokens=False,
-                padding=True,
-                truncation=False,
-                return_tensors="pt",
-            )
             encoded = {
                 key: value.to(self.model_device) for key, value in encoded.items()
             }
-            with self.torch.inference_mode():
-                output = self.model(**encoded)
-            mask = encoded["attention_mask"]
-            positions = self.torch.arange(mask.shape[1], device=mask.device).unsqueeze(
-                0
+            supports_keep = getattr(self.model, "_supports_logits_to_keep", None)
+            left_padded = self.tokenizer.padding_side == "left"
+            use_last_only = (
+                left_padded and callable(supports_keep) and supports_keep()
             )
-            last_positions = (positions * mask.to(dtype=self.torch.long)).argmax(dim=1)
-            batch_indices = self.torch.arange(mask.shape[0], device=mask.device)
-            next_logits = output.logits[batch_indices, last_positions]
+            forward_kwargs = {"logits_to_keep": 1} if use_last_only else {}
+            with self.torch.inference_mode():
+                output = self.model(**encoded, **forward_kwargs)
+            if use_last_only:
+                # Left padding places every real final token in the last column, so
+                # the single retained logit row is exactly the forced-choice
+                # next-token distribution. Requesting only that row skips the LM-head
+                # projection over the whole (up to max_length) padded sequence.
+                next_logits = output.logits[:, -1, :]
+            else:
+                mask = encoded["attention_mask"]
+                positions = self.torch.arange(
+                    mask.shape[1], device=mask.device
+                ).unsqueeze(0)
+                last_positions = (
+                    positions * mask.to(dtype=self.torch.long)
+                ).argmax(dim=1)
+                batch_indices = self.torch.arange(mask.shape[0], device=mask.device)
+                next_logits = output.logits[batch_indices, last_positions]
             probabilities = pairwise_positive_probability(
                 next_logits, self.negative_token_id, self.positive_token_id
             )

@@ -49,38 +49,43 @@ def hierarchical_paired_mean_difference(
             "Hierarchical inference requires at least two groups and two seeds"
         )
 
-    cell_a: dict[tuple[str, str], float] = {}
-    cell_b: dict[tuple[str, str], float] = {}
-    for seed_id in unique_seeds:
-        for group_id in unique_groups:
+    # Collapse the rows to a dense seed-by-group cell-mean matrix once. The
+    # matrix stores exactly the per-cell means the previous dict held, in the
+    # same row-major (seed, group) order returned by ``np.unique``.
+    n_seeds = len(unique_seeds)
+    n_groups = len(unique_groups)
+    cell_mean_a = np.empty((n_seeds, n_groups), dtype=float)
+    cell_mean_b = np.empty((n_seeds, n_groups), dtype=float)
+    for seed_index, seed_id in enumerate(unique_seeds):
+        for group_index, group_id in enumerate(unique_groups):
             indices = np.flatnonzero((seeds == seed_id) & (groups == group_id))
             if not len(indices):
                 raise ValueError(
                     f"Incomplete seed-by-group prediction grid at seed={seed_id}, group={group_id}"
                 )
-            cell_a[(seed_id, group_id)] = float(np.mean(a[indices]))
-            cell_b[(seed_id, group_id)] = float(np.mean(b[indices]))
+            cell_mean_a[seed_index, group_index] = float(np.mean(a[indices]))
+            cell_mean_b[seed_index, group_index] = float(np.mean(b[indices]))
 
     # Equal weight per seed-by-scenario cell prevents groups with more repeated
     # rollouts from masquerading as additional independent evidence.
-    observed_a = float(np.mean(list(cell_a.values())))
-    observed_b = float(np.mean(list(cell_b.values())))
+    observed_a = float(cell_mean_a.mean())
+    observed_b = float(cell_mean_b.mean())
     observed_diff = observed_a - observed_b
     rng = np.random.default_rng(seed)
     diffs = np.empty(n_boot, dtype=float)
     for iteration in range(n_boot):
-        sampled_seeds = rng.choice(unique_seeds, size=len(unique_seeds), replace=True)
-        sampled_groups = rng.choice(
-            unique_groups, size=len(unique_groups), replace=True
+        # Draw seed indices then group indices in this order: Generator.choice
+        # over an integer population consumes the random stream identically to
+        # choosing from the id arrays directly, so the resampled cells are the
+        # same as before. ``np.ix_`` reproduces the row-major seed-by-group
+        # ordering, keeping every reported statistic bit-identical while
+        # replacing ~n_boot * n_seeds * n_groups dict lookups with two means.
+        seed_choice = rng.choice(n_seeds, size=n_seeds, replace=True)
+        group_choice = rng.choice(n_groups, size=n_groups, replace=True)
+        selection = np.ix_(seed_choice, group_choice)
+        diffs[iteration] = float(
+            cell_mean_a[selection].mean() - cell_mean_b[selection].mean()
         )
-        sample_a: list[float] = []
-        sample_b: list[float] = []
-        for sampled_seed in sampled_seeds:
-            for sampled_group in sampled_groups:
-                key = (str(sampled_seed), str(sampled_group))
-                sample_a.append(cell_a[key])
-                sample_b.append(cell_b[key])
-        diffs[iteration] = float(np.mean(sample_a) - np.mean(sample_b))
 
     sign_flip = min(float(np.mean(diffs <= 0.0)), float(np.mean(diffs >= 0.0)))
     return {

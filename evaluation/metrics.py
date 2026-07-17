@@ -225,12 +225,19 @@ def paired_group_bootstrap_metric_diff(
     if len(unique_groups) < 2:
         raise ValueError("Grouped bootstrap requires at least two independent groups")
 
+    # Precompute each group's row indices once. The resampling draws and their
+    # order are unchanged, so results are identical to rescanning ``groups``
+    # every iteration, but the per-iteration cost drops from O(n_boot * G * N)
+    # array scans to a dictionary lookup plus concatenation.
+    group_to_indices = {
+        group: np.flatnonzero(groups == group) for group in unique_groups
+    }
     observed_diff = float(metric_fn(y, a) - metric_fn(y, b))
     rng = np.random.default_rng(seed)
     diffs: list[float] = []
     for _ in range(n_boot):
         sampled_groups = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        sampled_indices = np.concatenate([np.flatnonzero(groups == group) for group in sampled_groups])
+        sampled_indices = np.concatenate([group_to_indices[group] for group in sampled_groups])
         sample_y = y[sampled_indices]
         if len(np.unique(sample_y)) < 2:
             continue

@@ -8,6 +8,12 @@ from sklearn.linear_model import LogisticRegression
 from .base import Probe
 
 
+# Loaded SAEs are immutable, read-only feature encoders. The sweep constructs a
+# fresh probe per run, so cache the loaded module by its pinned identity to avoid
+# re-downloading/re-instantiating it on every run.
+_SAE_CACHE: dict[tuple[str, str, str], object] = {}
+
+
 class SAEProbe(Probe):
     name = "P5_sae"
     scores_are_probabilities = True
@@ -33,8 +39,13 @@ class SAEProbe(Probe):
         if not self.sae_release or not self.sae_id:
             raise RuntimeError("SAE release and id must be configured before using P5_sae")
 
-        self.sae = SAE.from_pretrained(self.sae_release, self.sae_id)[0].to(self.device)
-        self.sae.eval()
+        cache_key = (self.sae_release, self.sae_id, str(self.device))
+        cached = _SAE_CACHE.get(cache_key)
+        if cached is None:
+            cached = SAE.from_pretrained(self.sae_release, self.sae_id)[0].to(self.device)
+            cached.eval()
+            _SAE_CACHE[cache_key] = cached
+        self.sae = cached
 
     def _encode(self, X: np.ndarray) -> np.ndarray:
         import torch

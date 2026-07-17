@@ -147,14 +147,24 @@ def _encode(
                 f"Embedding inputs {indices[:5]} exceed max_length={max_length}; "
                 "shorten data or explicitly pass --allow_truncation"
             )
-        encoded = tokenizer(
-            batch_texts,
-            add_special_tokens=True,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
-        )
+        if not any(batch_truncated):
+            # Nothing exceeds max_length, so padding the ids already produced
+            # yields exactly what a second `truncation=True` tokenization would,
+            # without re-tokenizing the batch.
+            encoded = tokenizer.pad(
+                {"input_ids": untruncated},
+                padding=True,
+                return_tensors="pt",
+            )
+        else:
+            encoded = tokenizer(
+                batch_texts,
+                add_special_tokens=True,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            )
         encoded = {key: value.to(model_device) for key, value in encoded.items()}
         with torch.inference_mode():
             output = model(**encoded)
