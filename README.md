@@ -410,7 +410,7 @@ A final run is blocked unless it has a frozen protocol, at least three model fam
 ### Frontier one-command runner
 
 ```bash
-uv run python -m cli.run_frontier_suite --config experiments/protocol/neurips_main_manifest.yaml --device mps
+uv run python -m cli.run_frontier_suite --config experiments/protocol/main_research_manifest.yaml --device mps
 ```
 
 Use `--dry-run` to preview the command graph, `--device mps` on Apple Silicon, and `--release-artifacts` when running a frozen manifest.
@@ -423,7 +423,7 @@ uv run python -m cli.run_frontier_experiments
 
 This executes:
 
-- main frontier protocol (`experiments/protocol/neurips_main_manifest.yaml`)
+- main frontier protocol (`experiments/protocol/main_research_manifest.yaml`)
 - main ablations (`experiments/protocol/ablation_suite.yaml`)
 - optional negative controls
 - optional honesty-control auxiliary run (`experiments/controls/honesty_auxiliary_manifest.yaml`)
@@ -441,7 +441,7 @@ Flags:
 ```bash
 python -m pip install uv
 uv sync --locked --extra dev
-uv run python -m cli.validate_multimodel_config --config experiments/protocol/neurips_main_manifest.yaml --check_paths
+uv run python -m cli.validate_multimodel_config --config experiments/protocol/main_research_manifest.yaml --check_paths
 ```
 
 On a fresh machine, ensure all required source artifacts are available (the runner now stops early if declared inputs are missing) and set your Hugging Face credentials before any fetch/rollout steps.

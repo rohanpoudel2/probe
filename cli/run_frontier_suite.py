@@ -226,7 +226,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run the complete frontier experiment suite from a protocol config."
     )
-    parser.add_argument("--config", default="experiments/protocol/neurips_main_manifest.yaml")
+    parser.add_argument("--config", default="experiments/protocol/main_research_manifest.yaml")
     parser.add_argument(
         "--controls_config",
         default="experiments/controls/negative_controls.yaml",

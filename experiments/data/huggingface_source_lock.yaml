@@ -1,4 +1,4 @@
-# Exact upstream dataset sources used for the NeurIPS paper plan.
+# Exact upstream dataset sources used for the publication study plan.
 # This file is a source lock, not a directly runnable normalization manifest.
 # Use it to pin the authoritative Hugging Face repos / revisions before you
 # build the final task-family JSONL files consumed by the benchmark pipeline.

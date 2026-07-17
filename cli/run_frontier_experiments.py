@@ -90,7 +90,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--main-config",
-        default="experiments/protocol/neurips_main_manifest.yaml",
+        default="experiments/protocol/main_research_manifest.yaml",
         help="Main protocol manifest.",
     )
     parser.add_argument(

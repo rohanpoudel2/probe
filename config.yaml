@@ -1,7 +1,7 @@
 project:
   name: data_efficient_white_box_monitoring
   phase: frontier_protocol_rebuild
-  target_track: neurips_or_iclr_main
+  target_track: major_ml_conference_main
   paper_direction: white_box_gain_over_transcript_monitors_under_distribution_shift
 
 task_families:

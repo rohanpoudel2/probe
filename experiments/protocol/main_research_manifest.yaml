@@ -1,6 +1,6 @@
 protocol_version: frontier-v1
 protocol_stage: pilot
-results_dir: phase5_neurips_main_results
+results_dir: phase5_main_research_results
 overwrite: false
 bootstrap_samples: 1000
 views: answer,reasoning

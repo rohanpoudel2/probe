@@ -104,8 +104,8 @@ def test_black_box_execution_requires_complete_inputs() -> None:
 def test_legacy_protocol_manifests_are_blocked() -> None:
     for path in [
         Path("experiments/controls/_legacy/honesty_auxiliary_manifest.yaml"),
-        Path("experiments/controls/_legacy/neurips_final_manifest.yaml"),
-        Path("experiments/controls/neurips_final_manifest.yaml"),
+        Path("experiments/controls/_legacy/final_release_manifest.yaml"),
+        Path("experiments/controls/final_release_manifest.yaml"),
     ]:
         with pytest.raises(ValueError, match="Legacy protocol is intentionally blocked"):
             validate_config(load_yaml(path), check_paths=False, final_protocol=False)
