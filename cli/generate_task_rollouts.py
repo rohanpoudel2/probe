@@ -128,6 +128,12 @@ def main() -> None:
         action="store_true",
         help="Permit generation from a dirty worktree for an explicitly non-final pilot.",
     )
+    parser.add_argument(
+        "--no_thinking",
+        action="store_true",
+        help="Disable the model's reasoning trace (enable_thinking=False) for a faster "
+             "answer-view pilot. Non-final; the reasoning view is unavailable in this mode.",
+    )
     args = parser.parse_args()
 
     if args.model_revision in {"main", "latest", "unpinned"}:
@@ -197,12 +203,14 @@ def main() -> None:
             # by set_seed() immediately before each generate() call below, and
             # generate() does not mutate its inputs, so replicates remain
             # independent and their outputs are unchanged.
+            template_kwargs = {"enable_thinking": False} if args.no_thinking else {}
             encoded = tokenizer.apply_chat_template(
                 scenario.messages,
                 tokenize=True,
                 add_generation_prompt=True,
                 return_tensors="pt",
                 return_dict=True,
+                **template_kwargs,
             )
             if isinstance(encoded, torch.Tensor):
                 encoded = {
