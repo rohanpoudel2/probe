@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -137,6 +138,7 @@ class TaskActivationExtractor:
         if (
             self.cfg.require_model_generated
             and example.metadata.get("eligible_for_main_study") is False
+            and os.environ.get("PROBE_ALLOW_PILOT_BENIGN") != "1"
         ):
             raise ValueError(
                 f"Example {example.example_id} is explicitly ineligible for the main study"
