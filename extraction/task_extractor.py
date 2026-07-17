@@ -20,6 +20,7 @@ class TaskExtractionConfig:
     model_revision: Optional[str] = None
     tokenizer_revision: Optional[str] = None
     max_length: int = 1024
+    allow_truncation: bool = False
     pooling_mode: str = "mean"
     views: Optional[List[str]] = None
     modified_mode: str = "standard"
@@ -34,6 +35,12 @@ class TaskExtractionConfig:
     code_revision: Optional[str] = None
     code_dirty: bool = False
     split_seed: int = 42
+
+    def __post_init__(self) -> None:
+        if not self.layers:
+            raise ValueError("layers must contain at least one transformer block index")
+        if self.max_length < 1:
+            raise ValueError("max_length must be a positive integer")
 
 
 class TaskActivationExtractor:
@@ -61,6 +68,7 @@ class TaskActivationExtractor:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         resolved_device = resolve_torch_device(cfg.device)
+        self.resolved_device = resolved_device
         model_kwargs = {
             "revision": cfg.model_revision,
             "torch_dtype": "auto",
@@ -77,6 +85,9 @@ class TaskActivationExtractor:
         if resolved_device != "auto":
             self.model = self.model.to(resolved_device)
         self.model.eval()
+        first_parameter = next(self.model.parameters())
+        self.model_parameter_device = str(first_parameter.device)
+        self.model_parameter_dtype = str(first_parameter.dtype)
         self.chat_template_sha256 = (
             hashlib.sha256(str(self.tokenizer.chat_template).encode("utf-8")).hexdigest()
             if getattr(self.tokenizer, "chat_template", None)
@@ -252,8 +263,15 @@ class TaskActivationExtractor:
         if not input_ids:
             raise ValueError(f"Example {example.example_id} tokenized to an empty sequence")
 
-        if len(input_ids) > self.cfg.max_length:
-            original_length = len(input_ids)
+        original_length = len(input_ids)
+        truncated = original_length > self.cfg.max_length
+        if truncated:
+            if not self.cfg.allow_truncation:
+                raise ValueError(
+                    f"Example {example.example_id} has {original_length} tokens, "
+                    f"exceeding max_length={self.cfg.max_length}; truncation is "
+                    "prohibited unless explicitly enabled for a non-confirmatory run"
+                )
             input_ids = input_ids[-self.cfg.max_length :]
             token_spans = self._truncate_spans(token_spans, original_length, self.cfg.max_length)
 
@@ -269,7 +287,13 @@ class TaskActivationExtractor:
             raise ValueError(
                 f"Example {example.example_id} is missing requested views after tokenization/truncation: {missing}"
             )
-        return {"input_ids": input_ids, "token_spans": token_spans}
+        return {
+            "input_ids": input_ids,
+            "token_spans": token_spans,
+            "original_token_count": original_length,
+            "token_count": len(input_ids),
+            "truncated": truncated,
+        }
 
     @staticmethod
     def _reasoning_subspans(span: tuple[int, int]) -> Dict[str, tuple[int, int]]:
@@ -297,7 +321,9 @@ class TaskActivationExtractor:
                 new_spans[name] = (shifted_start, shifted_end)
         return new_spans
 
-    def extract_example(self, example: TaskExample) -> Dict[int, Dict[str, np.ndarray]]:
+    def extract_example_with_metadata(
+        self, example: TaskExample
+    ) -> tuple[Dict[int, Dict[str, np.ndarray]], Dict[str, object]]:
         encoded = self._tokenize_segments(example)
         input_ids = encoded["input_ids"]
         token_spans = encoded["token_spans"]
@@ -335,6 +361,20 @@ class TaskActivationExtractor:
             result[block_index] = pool_named_spans(
                 block_activations[offset], spans, mode=self.cfg.pooling_mode
             )
+        metadata = {
+            "original_token_count": int(encoded["original_token_count"]),
+            "token_count": int(encoded["token_count"]),
+            "truncated": bool(encoded["truncated"]),
+            "token_spans": {
+                name: [int(start), int(end)]
+                for name, (start, end) in token_spans.items()
+                if name in wanted_views
+            },
+        }
+        return result, metadata
+
+    def extract_example(self, example: TaskExample) -> Dict[int, Dict[str, np.ndarray]]:
+        result, _ = self.extract_example_with_metadata(example)
         return result
 
     def extract_split(self, examples: Iterable[TaskExample], split_name: str) -> None:
@@ -347,10 +387,14 @@ class TaskActivationExtractor:
         example_ids: List[str] = []
         question_ids: List[str] = []
         dropped_ids: List[str] = []
+        original_token_counts: List[int] = []
+        token_counts: List[int] = []
+        truncation_flags: List[bool] = []
+        token_spans_json: List[str] = []
 
         for example in examples:
             try:
-                result = self.extract_example(example)
+                result, extraction_metadata = self.extract_example_with_metadata(example)
             except ValueError:
                 if self.cfg.missing_view_policy == "drop":
                     dropped_ids.append(example.example_id)
@@ -359,6 +403,14 @@ class TaskActivationExtractor:
             labels.append(example.label)
             example_ids.append(example.example_id)
             question_ids.append(example.question_id or example.example_id)
+            original_token_counts.append(
+                int(extraction_metadata["original_token_count"])
+            )
+            token_counts.append(int(extraction_metadata["token_count"]))
+            truncation_flags.append(bool(extraction_metadata["truncated"]))
+            token_spans_json.append(
+                json.dumps(extraction_metadata["token_spans"], sort_keys=True)
+            )
             for layer, pooled_views in result.items():
                 for view_name, vector in pooled_views.items():
                     buffers[layer].setdefault(view_name, []).append(vector)
@@ -376,7 +428,13 @@ class TaskActivationExtractor:
             arrays["labels"] = np.asarray(labels, dtype=np.int64)
             arrays["example_ids"] = np.asarray(example_ids)
             arrays["question_ids"] = np.asarray(question_ids)
-            arrays["feature_schema_version"] = np.asarray("2")
+            arrays["original_token_counts"] = np.asarray(
+                original_token_counts, dtype=np.int64
+            )
+            arrays["token_counts"] = np.asarray(token_counts, dtype=np.int64)
+            arrays["truncated"] = np.asarray(truncation_flags, dtype=bool)
+            arrays["token_spans_json"] = np.asarray(token_spans_json)
+            arrays["feature_schema_version"] = np.asarray("3")
             arrays["layer_index_semantics"] = np.asarray("zero_based_transformer_block_output")
             arrays["model_name"] = np.asarray(self.cfg.model_name)
             arrays["model_revision"] = np.asarray(self.cfg.model_revision or "unpinned")
@@ -385,6 +443,26 @@ class TaskActivationExtractor:
             )
             arrays["chat_template_used"] = np.asarray(self.cfg.use_chat_template)
             arrays["chat_template_sha256"] = np.asarray(self.chat_template_sha256 or "none")
+            arrays["pooling_mode"] = np.asarray(self.cfg.pooling_mode)
+            arrays["requested_views_json"] = np.asarray(
+                json.dumps(wanted_views, sort_keys=True)
+            )
+            arrays["max_length"] = np.asarray(self.cfg.max_length)
+            arrays["allow_truncation"] = np.asarray(self.cfg.allow_truncation)
+            arrays["missing_view_policy"] = np.asarray(
+                self.cfg.missing_view_policy
+            )
+            arrays["require_model_generated"] = np.asarray(
+                self.cfg.require_model_generated
+            )
+            arrays["resolved_device"] = np.asarray(self.resolved_device)
+            arrays["model_parameter_device"] = np.asarray(
+                self.model_parameter_device
+            )
+            arrays["model_parameter_dtype"] = np.asarray(
+                self.model_parameter_dtype
+            )
+            arrays["feature_dtype"] = np.asarray(str(arrays[wanted_views[0]].dtype))
             arrays["dataset_sha256"] = np.asarray(self.cfg.dataset_sha256 or "unknown")
             arrays["code_revision"] = np.asarray(self.cfg.code_revision or "unknown")
             arrays["code_dirty"] = np.asarray(self.cfg.code_dirty)
@@ -398,10 +476,15 @@ class TaskActivationExtractor:
                             "tokenizer_revision": self.cfg.tokenizer_revision,
                             "layers": self.cfg.layers,
                             "max_length": self.cfg.max_length,
+                            "allow_truncation": self.cfg.allow_truncation,
                             "pooling_mode": self.cfg.pooling_mode,
                             "views": wanted_views,
                             "modified_mode": self.cfg.modified_mode,
+                            "prompt_prefix": self.cfg.prompt_prefix,
+                            "prompt_suffix": self.cfg.prompt_suffix,
                             "use_chat_template": self.cfg.use_chat_template,
+                            "missing_view_policy": self.cfg.missing_view_policy,
+                            "require_model_generated": self.cfg.require_model_generated,
                             "split_seed": self.cfg.split_seed,
                         },
                         sort_keys=True,

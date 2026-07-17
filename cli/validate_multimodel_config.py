@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -41,6 +42,18 @@ REQUIRED_BLACK_BOX_BASELINES = {
     "B3_llm_judge_few_shot",
     "B4_output_confidence_logistic",
 }
+FINAL_K_VALUES = {1, 2, 4, 8, 16, 32}
+
+
+def _parse_positive_int_set(value: object, *, field: str) -> set[int]:
+    raw_values = value if isinstance(value, list) else str(value).split(",")
+    try:
+        parsed = {int(str(item).strip()) for item in raw_values if str(item).strip()}
+    except ValueError as err:
+        raise ValueError(f"{field} must contain comma-separated integers") from err
+    if not parsed or any(item < 1 for item in parsed):
+        raise ValueError(f"{field} must contain positive integers")
+    return parsed
 
 
 def _validate_falsification_registry(
@@ -295,12 +308,14 @@ def _validate_feature_directory(
     task_name: str,
     min_calibration_negatives: int,
     required_splits: tuple[str, ...],
+    final_protocol: bool,
 ) -> dict[str, set[str]]:
     if not path.exists():
         raise FileNotFoundError(
             f"Missing feature directory for {model_cfg['name']} / {task_name}: {path}"
         )
     representative_groups: dict[str, set[str]] = {}
+    split_signatures: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for split in required_splits:
         files = sorted(path.glob(f"{split}_layer*.npz"))
         if not files:
@@ -329,10 +344,86 @@ def _validate_feature_directory(
                         f"Feature bundle {bundle_path} uses revision {observed_revision}, "
                         f"expected {model_cfg['model_revision']}"
                     )
-                if str(bundle["feature_schema_version"].item()) != "2":
+                feature_schema_version = str(
+                    bundle["feature_schema_version"].item()
+                )
+                if feature_schema_version not in {"2", "3"}:
                     raise ValueError(
-                        f"Feature bundle {bundle_path} is not schema version 2"
+                        f"Feature bundle {bundle_path} uses unsupported schema "
+                        f"version {feature_schema_version}"
                     )
+                if final_protocol and feature_schema_version != "3":
+                    raise ValueError(
+                        f"Final feature bundle {bundle_path} must use schema version 3"
+                    )
+                if feature_schema_version == "3":
+                    provenance_keys = (
+                        "original_token_counts",
+                        "token_counts",
+                        "truncated",
+                        "token_spans_json",
+                        "pooling_mode",
+                        "requested_views_json",
+                        "max_length",
+                        "allow_truncation",
+                        "missing_view_policy",
+                        "require_model_generated",
+                        "dropped_example_ids",
+                        "resolved_device",
+                        "model_parameter_device",
+                        "model_parameter_dtype",
+                        "feature_dtype",
+                        "layer_index_semantics",
+                    )
+                    missing_provenance = sorted(
+                        key for key in provenance_keys if key not in bundle
+                    )
+                    if missing_provenance:
+                        raise ValueError(
+                            f"Feature bundle {bundle_path} lacks schema-v3 provenance "
+                            f"{missing_provenance}"
+                        )
+                    n_examples = len(bundle["labels"])
+                    for key in (
+                        "original_token_counts",
+                        "token_counts",
+                        "truncated",
+                        "token_spans_json",
+                    ):
+                        if len(bundle[key]) != n_examples:
+                            raise ValueError(
+                                f"Feature bundle {bundle_path} has misaligned {key}"
+                            )
+                    original_counts = bundle["original_token_counts"].astype(int)
+                    retained_counts = bundle["token_counts"].astype(int)
+                    truncated = bundle["truncated"].astype(bool)
+                    if np.any(original_counts < retained_counts) or np.any(
+                        truncated != (original_counts > retained_counts)
+                    ):
+                        raise ValueError(
+                            f"Feature bundle {bundle_path} has inconsistent truncation provenance"
+                        )
+                    for raw_spans in bundle["token_spans_json"].astype(str):
+                        spans = json.loads(raw_spans)
+                        if not isinstance(spans, dict) or not spans:
+                            raise ValueError(
+                                f"Feature bundle {bundle_path} has invalid token spans"
+                            )
+                    if final_protocol and (
+                        bool(bundle["allow_truncation"].item()) or np.any(truncated)
+                    ):
+                        raise ValueError(
+                            f"Final feature bundle {bundle_path} permits or contains truncation"
+                        )
+                    if final_protocol and (
+                        str(bundle["missing_view_policy"].item()) != "error"
+                        or not bool(bundle["require_model_generated"].item())
+                        or str(bundle["dropped_example_ids"].item()).strip()
+                    ):
+                        raise ValueError(
+                            f"Final feature bundle {bundle_path} permits dropped, missing-view, "
+                            "or non-model-generated examples"
+                        )
                 if (
                     "model_name" not in bundle
                     or str(bundle["model_name"].item()) != model_cfg["model_id"]
@@ -369,9 +460,32 @@ def _validate_feature_directory(
                         f"Feature bundle {bundle_path} contains non-binary labels"
                     )
                 example_ids = np.asarray(bundle["example_ids"]).astype(str)
+                question_ids = np.asarray(bundle["question_ids"]).astype(str)
+                if not (
+                    len(labels) == len(example_ids) == len(question_ids)
+                ):
+                    raise ValueError(
+                        f"Feature bundle {bundle_path} has misaligned labels, "
+                        "example IDs, or question IDs"
+                    )
                 if len(set(example_ids.tolist())) != len(example_ids):
                     raise ValueError(
                         f"Feature bundle {bundle_path} contains duplicate example IDs"
+                    )
+                signature = (labels, example_ids, question_ids)
+                reference = split_signatures.get(split)
+                if reference is None:
+                    split_signatures[split] = tuple(
+                        values.copy() for values in signature
+                    )
+                    representative_groups[split] = set(question_ids.tolist())
+                elif not all(
+                    np.array_equal(expected, observed)
+                    for expected, observed in zip(reference, signature)
+                ):
+                    raise ValueError(
+                        f"Feature bundle {bundle_path} disagrees with other {split} "
+                        "layer bundles on labels, example IDs, or question IDs"
                     )
                 if (
                     split == "calibration"
@@ -381,7 +495,6 @@ def _validate_feature_directory(
                         f"Feature bundle {bundle_path} has fewer than {min_calibration_negatives} calibration negatives"
                     )
                 if split == "calibration":
-                    question_ids = np.asarray(bundle["question_ids"]).astype(str)
                     n_negative_groups = len(np.unique(question_ids[labels == 0]))
                     if n_negative_groups != int(np.sum(labels == 0)):
                         raise ValueError(
@@ -392,9 +505,6 @@ def _validate_feature_directory(
                             f"Feature bundle {bundle_path} has only {n_negative_groups} independent "
                             f"negative calibration groups; requires {min_calibration_negatives}"
                         )
-                representative_groups.setdefault(
-                    split, set(np.asarray(bundle["question_ids"]).astype(str).tolist())
-                )
     split_names = list(representative_groups)
     for index, split_a in enumerate(split_names):
         for split_b in split_names[index + 1 :]:
@@ -811,6 +921,7 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                     task_name,
                     int(cfg["min_calibration_negatives"]),
                     required_splits,
+                    final_protocol,
                 )
             for task_name, path_str in calibration_dirs.items():
                 calibration_groups = _validate_feature_directory(
@@ -819,6 +930,7 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                     f"{task_name}_benign_calibration",
                     int(cfg["min_calibration_negatives"]),
                     ("calibration",),
+                    final_protocol,
                 )
                 source_groups = set().union(*feature_groups.get(task_name, {}).values())
                 overlap = source_groups.intersection(
@@ -926,6 +1038,13 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
         if int(cfg.get("seeds", 0)) < 10:
             raise ValueError(
                 "Final execution requires at least 10 few-shot training seeds"
+            )
+        final_k_values = _parse_positive_int_set(
+            cfg.get("k_values", ""), field="k_values"
+        )
+        if final_k_values != FINAL_K_VALUES:
+            raise ValueError(
+                "Final execution requires k_values=1,2,4,8,16,32"
             )
         if cfg.get("balance_modes") != "balanced":
             raise ValueError(
@@ -1036,6 +1155,15 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
             raise ValueError(
                 "Final comparisons_file must define at least one comparison"
             )
+        primary_comparisons = [
+            comparison
+            for comparison in comparisons
+            if comparison.get("comparison_role") == "primary_white_box_gain"
+        ]
+        if not primary_comparisons:
+            raise ValueError(
+                "Final comparisons_file must define a primary_white_box_gain comparison"
+            )
         for comparison in comparisons:
             for key in (
                 "comparison_id",
@@ -1052,6 +1180,78 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                 raise ValueError(
                     "Final comparisons_file still contains placeholder values"
                 )
+            if comparison.get("comparison_role") == "primary_white_box_gain":
+                if not str(comparison["system_a"].get("probe", "")).startswith("P"):
+                    raise ValueError(
+                        "Primary white-box gain system_a must be a registered P* monitor"
+                    )
+                if not str(comparison["system_b"].get("probe", "")).startswith("B"):
+                    raise ValueError(
+                        "Primary white-box gain system_b must be a registered B* monitor"
+                    )
+                missing_common = sorted(
+                    {"model", "source_task", "target_task", "k"}.difference(
+                        comparison["common_filters"]
+                    )
+                )
+                if missing_common:
+                    raise ValueError(
+                        "Primary white-box gain comparison lacks common filters "
+                        f"{missing_common}"
+                    )
+                for system_key in ("system_a", "system_b"):
+                    missing_identity = sorted(
+                        {"probe", "balance_mode", "layer", "view"}.difference(
+                            comparison[system_key]
+                        )
+                    )
+                    if missing_identity:
+                        raise ValueError(
+                            f"Primary {system_key} lacks exact identity fields "
+                            f"{missing_identity}"
+                        )
+                if comparison["split"] != "target_test" or comparison["metric"] != "tpr":
+                    raise ValueError(
+                        "Primary white-box gain must compare target_test TPR"
+                    )
+
+        configured_pairs = {
+            (str(pair["source_task"]), str(pair["target_task"]))
+            for key in ("task_pairs", "calibration_pairs", "transfer_pairs")
+            for pair in cfg.get(key, [])
+        }
+        expected_primary = {
+            (str(model["name"]), source_task, target_task, k)
+            for model in models
+            for source_task, target_task in configured_pairs
+            for k in final_k_values
+        }
+        observed_primary: list[tuple[str, str, str, int]] = []
+        for comparison in primary_comparisons:
+            common = comparison["common_filters"]
+            try:
+                observed_primary.append(
+                    (
+                        str(common["model"]),
+                        str(common["source_task"]),
+                        str(common["target_task"]),
+                        int(common["k"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as err:
+                raise ValueError(
+                    "Primary comparison has invalid model/source/target/k filters"
+                ) from err
+        if len(observed_primary) != len(set(observed_primary)):
+            raise ValueError("Final comparisons_file duplicates a primary comparison")
+        observed_primary_set = set(observed_primary)
+        if observed_primary_set != expected_primary:
+            missing_primary = sorted(expected_primary.difference(observed_primary_set))
+            extra_primary = sorted(observed_primary_set.difference(expected_primary))
+            raise ValueError(
+                "Final comparisons_file has incomplete primary coverage: "
+                f"missing={missing_primary[:5]}, extra={extra_primary[:5]}"
+            )
 
 
 def main() -> None:

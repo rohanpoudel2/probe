@@ -4,6 +4,9 @@
 # Proposals (not tracked)
 proposal.txt
 
+# Local manuscript and source template (not tracked)
+paper/
+
 # activation_data
 activation_data/
 

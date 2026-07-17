@@ -82,6 +82,14 @@ def main() -> None:
     )
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--max_length", type=int, default=1024)
+    parser.add_argument(
+        "--allow_truncation",
+        action="store_true",
+        help=(
+            "Permit explicit left truncation for a non-confirmatory run. "
+            "The default is to fail if any rendered input exceeds max_length."
+        ),
+    )
     parser.add_argument("--pooling_mode", default="mean", choices=["mean", "last"])
     parser.add_argument(
         "--modified_modes",
@@ -168,6 +176,7 @@ def main() -> None:
                 tokenizer_revision=args.tokenizer_revision,
                 layers=_parse_layers(args.layers),
                 max_length=args.max_length,
+                allow_truncation=args.allow_truncation,
                 pooling_mode=args.pooling_mode,
                 views=[v.strip() for v in args.views.split(",") if v.strip()],
                 device=args.device,

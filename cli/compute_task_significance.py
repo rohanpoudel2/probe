@@ -15,6 +15,10 @@ from evaluation.hierarchical_statistics import (
 )
 
 
+PRIMARY_COMPARISON_ROLE = "primary_white_box_gain"
+PRIMARY_IDENTITY_KEYS = ("probe", "balance_mode", "layer", "view")
+
+
 def _filter_rows(df: pd.DataFrame, filters: dict[str, Any], comparison_id: str) -> pd.DataFrame:
     selected = df
     for key, value in filters.items():
@@ -29,6 +33,52 @@ def _filter_rows(df: pd.DataFrame, filters: dict[str, Any], comparison_id: str) 
             f"Comparison {comparison_id} does not identify exactly one run per seed: {filters}"
         )
     return selected.copy()
+
+
+def _validate_primary_source_selection(
+    comparison: dict[str, Any],
+    filters_a: dict[str, Any],
+    filters_b: dict[str, Any],
+    selected: pd.DataFrame,
+    comparison_id: str,
+) -> None:
+    if comparison.get("comparison_role") != PRIMARY_COMPARISON_ROLE:
+        return
+    for filters, access_regime, label in (
+        (filters_a, "white_box", "system_a"),
+        (filters_b, "black_box", "system_b"),
+    ):
+        missing = [
+            key
+            for key in ("model", "source_task", *PRIMARY_IDENTITY_KEYS)
+            if key not in filters
+        ]
+        if missing:
+            raise ValueError(
+                f"Primary comparison {comparison_id} {label} lacks exact "
+                f"source-selected identity fields {missing}"
+            )
+        candidate = selected[
+            (selected["model"].astype(str) == str(filters["model"]))
+            & (selected["source_task"].astype(str) == str(filters["source_task"]))
+            & (selected["access_regime"].astype(str) == access_regime)
+        ]
+        if len(candidate) != 1:
+            raise ValueError(
+                f"Primary comparison {comparison_id} expected one {access_regime} "
+                f"source selection, found {len(candidate)}"
+            )
+        expected = candidate.iloc[0]
+        mismatched = {
+            key: {"registered": filters[key], "source_selected": expected[key]}
+            for key in PRIMARY_IDENTITY_KEYS
+            if str(filters[key]) != str(expected[key])
+        }
+        if mismatched:
+            raise ValueError(
+                f"Primary comparison {comparison_id} {label} does not match the "
+                f"source-only selector: {mismatched}"
+            )
 
 
 def _load_prediction_file(path_value: str, results_dir: Path) -> pd.DataFrame:
@@ -101,12 +151,35 @@ def main() -> None:
     if not comparisons:
         raise ValueError("Comparison file must define at least one pre-registered comparison")
 
+    primary_selection_path = results_dir / "task_primary_source_systems.csv"
+    primary_comparisons = [
+        comparison
+        for comparison in comparisons
+        if comparison.get("comparison_role") == PRIMARY_COMPARISON_ROLE
+    ]
+    if primary_comparisons:
+        if not primary_selection_path.exists():
+            raise FileNotFoundError(
+                f"Primary comparisons require {primary_selection_path}; run "
+                "build_frozen_transfer_report first"
+            )
+        primary_selection = pd.read_csv(primary_selection_path)
+    else:
+        primary_selection = pd.DataFrame()
+
     output_rows: list[dict[str, Any]] = []
     for index, comparison in enumerate(comparisons):
         comparison_id = str(comparison.get("comparison_id", f"comparison_{index}"))
         common = comparison.get("common_filters", {})
         filters_a = {**common, **comparison.get("system_a", {})}
         filters_b = {**common, **comparison.get("system_b", {})}
+        _validate_primary_source_selection(
+            comparison,
+            filters_a,
+            filters_b,
+            primary_selection,
+            comparison_id,
+        )
         runs_a = _filter_rows(df, filters_a, comparison_id)
         runs_b = _filter_rows(df, filters_b, comparison_id)
         split = comparison.get("split", "target_test")

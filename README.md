@@ -378,6 +378,10 @@ The sweep writes one atomic prediction artifact per run. Unsupported probe/sampl
 Exact systems must be declared before final-test inspection:
 
 ```bash
+uv run python -m cli.build_frozen_transfer_report \
+  --results_dir results/frontier_pilot \
+  --selection_k 8
+
 uv run python -m cli.compute_task_significance \
   --results_dir results/frontier_pilot \
   --comparisons experiments/protocol/preregistered_comparisons.example.yaml \
@@ -390,7 +394,7 @@ uv run python -m cli.compute_falsification_significance \
   --bootstrap_samples 5000
 ```
 
-The frozen multi-model manifest records the copied, completed file as `falsification_comparisons_file`. Both inference paths require exact system selectors, pair identical evidence across systems, jointly resample few-shot seeds and independent scenario groups, and report system-A-minus-system-B differences. Falsification hypotheses share one global Holm family; the comparison file and its hash are archived before the table is emitted.
+The selector writes `task_primary_source_systems.csv`, with one family, balance mode, layer, and view identity per access regime. A comparison marked `primary_white_box_gain` must match those identities exactly or inference stops. For a frozen run, register one primary comparison for every configured model, task pair, and label budget. The multi-model manifest records the completed files as `comparisons_file` and `falsification_comparisons_file`. Both inference paths pair identical evidence across systems, jointly resample few-shot seeds and independent scenario groups, and report system-A-minus-system-B differences. Falsification hypotheses share one global Holm family; the comparison files and their hashes are archived before tables are emitted.
 
 ## Final execution gate
 
@@ -445,10 +449,9 @@ On a fresh machine, ensure all required source artifacts are available (the runn
 ```bash
 export HF_HOME=...
 export HF_TOKEN=...
-export PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0   # macOS only, helpful for large activation pulls
 ```
 
-Use one command to force all model execution onto MPS:
+Use one command to force model-backed execution onto MPS. If memory is tight, reduce the registered batch size or run one model at a time; do not change layers, context limits, or model identities mid-run.
 
 ```bash
 uv run python -m cli.run_frontier_experiments --device mps

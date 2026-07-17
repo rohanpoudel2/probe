@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=80", "wheel>=0.45"]
+requires = ["setuptools>=83", "wheel>=0.45"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +9,7 @@ description = "Few-shot internal monitoring benchmark for socially misaligned re
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-  "torch==2.11.0",
+  "torch==2.13.0",
   "transformers==5.5.4",
   "numpy==2.4.3",
   "scipy==1.17.1",
@@ -24,7 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "pytest==8.4.2",
+  "pytest==9.0.3",
 ]
 
 [tool.pytest.ini_options]
