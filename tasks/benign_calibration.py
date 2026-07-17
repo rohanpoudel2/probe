@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import os
 from typing import List, Optional
 
 from data.schema import TaskExample
 from tasks.base import BehaviorTask, TaskSpec
 from tasks.jsonl_utils import read_jsonl, require_fields, rollout_metadata
+
+# Explicitly non-final pilot provenance. When PROBE_ALLOW_PILOT_BENIGN=1, benign
+# calibration rows carrying this truthfully-automated label_source are accepted in
+# place of the two-human-rater consensus. The data records that the screen was
+# automated (never human), and such rows are not eligible for the main study.
+PILOT_BENIGN_LABEL_SOURCE = "automated_heuristic_benign_screen_pilot"
+PILOT_BENIGN_PROTOCOL = "pilot-auto-benign-v1"
+
+
+def _pilot_benign_enabled() -> bool:
+    return os.environ.get("PROBE_ALLOW_PILOT_BENIGN") == "1"
 
 
 class BenignCalibrationTask(BehaviorTask):
@@ -52,27 +64,43 @@ class BenignCalibrationTask(BehaviorTask):
                 "generated_by_model"
             ) is not True:
                 raise ValueError(f"Benign calibration row {example_id} is not on-policy")
-            if row["label_source"] != "independent_benign_screening_consensus":
-                raise ValueError(
-                    f"Benign calibration row {example_id} lacks independent consensus"
-                )
-            if row["annotation_protocol"] != "benign-screening-v1":
-                raise ValueError(
-                    f"Benign calibration row {example_id} uses an unsupported screening protocol"
-                )
-            screening = row["annotation_metadata"]
-            if not isinstance(screening, dict):
-                raise ValueError(f"Benign calibration row {example_id} has invalid screening metadata")
-            n_raters = screening.get("n_independent_raters")
-            if (
-                not isinstance(n_raters, int)
-                or isinstance(n_raters, bool)
-                or n_raters < 2
-                or screening.get("unanimous_eligible") is not True
-            ):
-                raise ValueError(
-                    f"Benign calibration row {example_id} lacks two-rater unanimous eligibility"
-                )
+            is_pilot_row = (
+                _pilot_benign_enabled()
+                and row["label_source"] == PILOT_BENIGN_LABEL_SOURCE
+            )
+            if is_pilot_row:
+                # Non-final automated screen. Provenance is recorded honestly; no
+                # human-rater consensus is claimed. Gated by PROBE_ALLOW_PILOT_BENIGN.
+                if row["annotation_protocol"] != PILOT_BENIGN_PROTOCOL:
+                    raise ValueError(
+                        f"Pilot benign row {example_id} uses an unsupported pilot protocol"
+                    )
+                if not isinstance(row["annotation_metadata"], dict):
+                    raise ValueError(
+                        f"Pilot benign row {example_id} has invalid screening metadata"
+                    )
+            else:
+                if row["label_source"] != "independent_benign_screening_consensus":
+                    raise ValueError(
+                        f"Benign calibration row {example_id} lacks independent consensus"
+                    )
+                if row["annotation_protocol"] != "benign-screening-v1":
+                    raise ValueError(
+                        f"Benign calibration row {example_id} uses an unsupported screening protocol"
+                    )
+                screening = row["annotation_metadata"]
+                if not isinstance(screening, dict):
+                    raise ValueError(f"Benign calibration row {example_id} has invalid screening metadata")
+                n_raters = screening.get("n_independent_raters")
+                if (
+                    not isinstance(n_raters, int)
+                    or isinstance(n_raters, bool)
+                    or n_raters < 2
+                    or screening.get("unanimous_eligible") is not True
+                ):
+                    raise ValueError(
+                        f"Benign calibration row {example_id} lacks two-rater unanimous eligibility"
+                    )
 
             answer = row.get("assistant_response") or row.get("final_answer")
             if not isinstance(answer, str) or not answer.strip():

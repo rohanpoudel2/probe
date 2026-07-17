@@ -391,6 +391,12 @@ def build_motivated_reasoning_scenarios(
             if correct == "unknown" or len(choices) < 2 or correct not in choices:
                 raise ValueError(f"Unresolvable choices at {path}:{index + 1}")
             pressure_target = _pick_wrong_answer(correct, choices)
+            # Some upstream MCQ rows (notably mmlu auxiliary_train) are malformed:
+            # every option is identical (e.g. ['.', '.', '.', '.']), so no distinct
+            # incorrect option exists to pressure toward. Skip these degenerate rows
+            # rather than fabricate an off-list target.
+            if pressure_target not in choices or pressure_target == correct:
+                continue
             correct_index = choices.index(correct)
             pressure_index = choices.index(pressure_target)
             rendered_question = _format_mcq_prompt(question, choices)

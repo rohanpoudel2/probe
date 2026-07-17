@@ -153,6 +153,25 @@ def _resolve_correct_choice(row: dict[str, Any]) -> tuple[str, list[str]]:
         ),
         None,
     )
+    # Prefer an explicit label->text mapping when present (e.g. ARC / CommonsenseQA
+    # store choices as {"label": [...], "text": [...]}). This resolves the answer key
+    # through the actual labels and correctly handles 1-based numeric labels
+    # ("1".."4") and letter labels ("A".."E") without any index assumption.
+    raw_choices = row.get("choices")
+    if isinstance(raw_choices, dict) and answer is not None:
+        labels = raw_choices.get("label")
+        texts = raw_choices.get("text")
+        if (
+            isinstance(labels, list)
+            and isinstance(texts, list)
+            and len(labels) == len(texts)
+        ):
+            label_strs = [str(label).strip() for label in labels]
+            answer_key = str(answer).strip()
+            if answer_key in label_strs:
+                resolved = _ensure_text(texts[label_strs.index(answer_key)])
+                if resolved:
+                    return resolved, choices
     if isinstance(answer, int) and 0 <= answer < len(choices):
         return choices[answer], choices
     if isinstance(answer, str):

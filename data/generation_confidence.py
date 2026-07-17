@@ -99,8 +99,11 @@ def build_generation_confidence_trace(
         chunk_entropy = -entropy_terms.sum(dim=-1)
         top_probabilities, top_indices = torch.topk(probabilities, k=2, dim=-1)
         chunk_margin = top_probabilities[:, 0] - top_probabilities[:, 1]
-        selection = torch.as_tensor(chunk_token_ids, dtype=torch.long)
-        chunk_selected = log_probs[torch.arange(stacked.shape[0]), selection]
+        selection = torch.as_tensor(
+            chunk_token_ids, dtype=torch.long, device=stacked.device
+        )
+        row_index = torch.arange(stacked.shape[0], device=stacked.device)
+        chunk_selected = log_probs[row_index, selection]
         chunk_is_top1 = top_indices[:, 0] == selection
         selected_logprobs.extend(float(value) for value in chunk_selected.tolist())
         entropies.extend(float(value) for value in chunk_entropy.tolist())
