@@ -50,7 +50,7 @@ class TaskActivationExtractor:
         self.cfg = cfg
         if cfg.missing_view_policy not in {"error", "drop"}:
             raise ValueError("missing_view_policy must be 'error' or 'drop'")
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModel, AutoTokenizer
         from cli.common import resolve_torch_device
 
         tokenizer_revision = cfg.tokenizer_revision or cfg.model_revision
@@ -67,7 +67,10 @@ class TaskActivationExtractor:
         }
         if resolved_device == "auto":
             model_kwargs["device_map"] = "auto"
-        self.model = AutoModelForCausalLM.from_pretrained(
+        # Only the transformer-block hidden states are needed; loading the base
+        # model (no language-modeling head) yields identical ``hidden_states``
+        # while skipping the full-vocabulary output projection on every forward.
+        self.model = AutoModel.from_pretrained(
             cfg.model_name,
             **model_kwargs,
         )
@@ -80,6 +83,7 @@ class TaskActivationExtractor:
             else None
         )
         self._validate_layers()
+        self._truncate_unused_blocks()
 
     def _validate_layers(self) -> None:
         n_layers = int(getattr(self.model.config, "num_hidden_layers", -1))
@@ -88,6 +92,30 @@ class TaskActivationExtractor:
             raise ValueError(
                 f"Configured transformer-block layers {invalid} are invalid for a model with {n_layers} blocks"
             )
+
+    def _truncate_unused_blocks(self) -> None:
+        """Drop transformer blocks above the highest requested layer.
+
+        Extraction only reads ``hidden_states`` up to ``max(layers)``; any blocks
+        above it are computed and thrown away. For a standard decoder stack whose
+        single final norm produces ``last_hidden_state`` (e.g. ``Qwen3Model``),
+        removing the unused tail and neutralising that final norm leaves every
+        retained block's captured hidden state bit-identical — the top captured
+        entry is post-norm, so with an identity norm it equals the raw block
+        output, matching the untruncated model's intermediate state at that
+        index — while skipping the upper-network forward entirely. Models that do
+        not expose the expected ``.layers``/``.norm`` layout are left untouched.
+        """
+        base = getattr(self.model, "model", self.model)
+        if not (hasattr(base, "layers") and hasattr(base, "norm")):
+            return
+        n_layers = int(getattr(base.config, "num_hidden_layers", len(base.layers)))
+        n_needed = max(self.cfg.layers) + 1
+        if n_needed >= n_layers:
+            return
+        base.layers = base.layers[:n_needed]
+        base.norm = torch.nn.Identity()
+        base.config.num_hidden_layers = n_needed
 
     def _prepared_segments(self, example: TaskExample) -> Dict[str, str]:
         if self.cfg.require_model_generated and example.metadata.get("data_origin") != "on_policy_generation":
@@ -277,25 +305,35 @@ class TaskActivationExtractor:
         input_tensor = torch.tensor([input_ids], device=model_device)
         attention_mask = torch.ones_like(input_tensor)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = self.model(
                 input_ids=input_tensor,
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
-        hidden_states = outputs.hidden_states
+            hidden_states = outputs.hidden_states
+            for block_index in self.cfg.layers:
+                hidden_state_index = block_index + 1
+                if hidden_state_index >= len(hidden_states):
+                    raise ValueError(
+                        f"Block {block_index} maps to hidden state {hidden_state_index}, but model returned {len(hidden_states)} states"
+                    )
+            # Gather every requested block and copy to host in one device->host
+            # transfer instead of one per layer, minimising MPS synchronisations.
+            block_activations = (
+                torch.stack(
+                    [hidden_states[block_index + 1][0] for block_index in self.cfg.layers]
+                )
+                .float()
+                .cpu()
+                .numpy()
+            )
         wanted_views = self.cfg.views or ["full_text"]
         result: Dict[int, Dict[str, np.ndarray]] = {}
-        for block_index in self.cfg.layers:
-            hidden_state_index = block_index + 1
-            if hidden_state_index >= len(hidden_states):
-                raise ValueError(
-                    f"Block {block_index} maps to hidden state {hidden_state_index}, but model returned {len(hidden_states)} states"
-                )
-            activations = hidden_states[hidden_state_index][0].detach().float().cpu().numpy()
+        for offset, block_index in enumerate(self.cfg.layers):
             spans = {name: token_spans[name] for name in wanted_views}
             result[block_index] = pool_named_spans(
-                activations, spans, mode=self.cfg.pooling_mode
+                block_activations[offset], spans, mode=self.cfg.pooling_mode
             )
         return result
 

@@ -192,6 +192,26 @@ def main() -> None:
     generated_count = 0
     with output.open("a", encoding="utf-8") as handle:
         for scenario_index, scenario in enumerate(scenarios):
+            # The prompt encoding depends only on the scenario, not the replicate
+            # or seed, so build it once per scenario. Sampling randomness is set
+            # by set_seed() immediately before each generate() call below, and
+            # generate() does not mutate its inputs, so replicates remain
+            # independent and their outputs are unchanged.
+            encoded = tokenizer.apply_chat_template(
+                scenario.messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt",
+                return_dict=True,
+            )
+            if isinstance(encoded, torch.Tensor):
+                encoded = {
+                    "input_ids": encoded,
+                    "attention_mask": torch.ones_like(encoded),
+                }
+            encoded = {
+                key: value.to(model_device) for key, value in encoded.items()
+            }
             for replicate in range(args.num_rollouts):
                 rollout_seed = (
                     args.seed + scenario_index * args.num_rollouts + replicate
@@ -202,21 +222,6 @@ def main() -> None:
                 if rollout_id in completed:
                     continue
                 set_seed(rollout_seed)
-                encoded = tokenizer.apply_chat_template(
-                    scenario.messages,
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    return_tensors="pt",
-                    return_dict=True,
-                )
-                if isinstance(encoded, torch.Tensor):
-                    encoded = {
-                        "input_ids": encoded,
-                        "attention_mask": torch.ones_like(encoded),
-                    }
-                encoded = {
-                    key: value.to(model_device) for key, value in encoded.items()
-                }
                 kwargs = {
                     "max_new_tokens": args.max_new_tokens,
                     "do_sample": args.temperature > 0.0,

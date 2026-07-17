@@ -68,26 +68,44 @@ def build_generation_confidence_trace(
     entropies: list[float] = []
     margins: list[float] = []
     selected_is_top1: list[bool] = []
-    for index, (score, token_id) in enumerate(zip(scores, token_ids.tolist())):
-        values = torch.as_tensor(score).detach().float()
-        if values.ndim == 2 and values.shape[0] == 1:
-            values = values[0]
-        if values.ndim != 1 or not 0 <= int(token_id) < len(values):
-            raise ValueError(
-                f"Invalid generation score tensor at response token {index}"
-            )
-        log_probs = torch.log_softmax(values, dim=-1)
+    token_id_list = token_ids.tolist()
+    # Summaries are computed in batches over the step-score matrix. Every stored
+    # value (selected log-prob, entropy, top-1/top-2 margin, is-top-1) is
+    # identical to a per-token computation up to floating-point reduction order;
+    # batching collapses the per-token Python/kernel dispatch that dominates
+    # wall-clock on MPS. The chunk bounds peak memory for large vocabularies.
+    chunk_size = 64
+    for start in range(0, len(scores), chunk_size):
+        chunk_scores = scores[start : start + chunk_size]
+        chunk_token_ids = token_id_list[start : start + chunk_size]
+        rows: list[Any] = []
+        for offset, score in enumerate(chunk_scores):
+            values = torch.as_tensor(score).detach().float()
+            if values.ndim == 2 and values.shape[0] == 1:
+                values = values[0]
+            if values.ndim != 1 or not 0 <= int(chunk_token_ids[offset]) < len(values):
+                raise ValueError(
+                    f"Invalid generation score tensor at response token {start + offset}"
+                )
+            rows.append(values)
+        stacked = torch.stack(rows, dim=0)
+        log_probs = torch.log_softmax(stacked, dim=-1)
         probabilities = torch.exp(log_probs)
         entropy_terms = torch.where(
             probabilities > 0,
             probabilities * torch.nan_to_num(log_probs, neginf=0.0),
             torch.zeros_like(probabilities),
         )
-        top_probabilities, top_indices = torch.topk(probabilities, k=2)
-        selected_logprobs.append(float(log_probs[int(token_id)].item()))
-        entropies.append(float((-entropy_terms.sum()).item()))
-        margins.append(float((top_probabilities[0] - top_probabilities[1]).item()))
-        selected_is_top1.append(bool(int(top_indices[0].item()) == int(token_id)))
+        chunk_entropy = -entropy_terms.sum(dim=-1)
+        top_probabilities, top_indices = torch.topk(probabilities, k=2, dim=-1)
+        chunk_margin = top_probabilities[:, 0] - top_probabilities[:, 1]
+        selection = torch.as_tensor(chunk_token_ids, dtype=torch.long)
+        chunk_selected = log_probs[torch.arange(stacked.shape[0]), selection]
+        chunk_is_top1 = top_indices[:, 0] == selection
+        selected_logprobs.extend(float(value) for value in chunk_selected.tolist())
+        entropies.extend(float(value) for value in chunk_entropy.tolist())
+        margins.extend(float(value) for value in chunk_margin.tolist())
+        selected_is_top1.extend(bool(value) for value in chunk_is_top1.tolist())
 
     trace: dict[str, Any] = {
         "schema_version": GENERATION_CONFIDENCE_SCHEMA_VERSION,
