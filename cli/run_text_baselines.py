@@ -53,8 +53,15 @@ def _load_splits(task_name: str, path: str, view: str):
             f"Text baselines require on-policy model outputs; invalid examples include {invalid[:5]}"
         )
     splits = declared_protocol_split(examples, group_key=task.spec.grouped_split_key)
+    # Skip splits with no examples (e.g. a task with a dedicated benign calibration
+    # source has an empty task-internal calibration split); building a text view
+    # from an empty split would fail and such splits are never consumed here.
     return (
-        {name: examples_to_text_arrays(rows, view) for name, rows in splits.items()},
+        {
+            name: examples_to_text_arrays(rows, view)
+            for name, rows in splits.items()
+            if rows
+        },
         monitored_model_identity(examples),
     )
 
