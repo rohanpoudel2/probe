@@ -112,6 +112,17 @@ Generation is resumable and records the exact chat template, token IDs, decoding
 
 Model-backed commands in this repo accept a `--device` flag (`auto|cpu|cuda|cuda:N|mps`). On Apple Silicon, use `--device mps`.
 
+The monitored-model panel is pinned in the active manifests:
+
+| Study name | Hugging Face model | Revision | Family |
+| --- | --- | --- | --- |
+| `Qwen3-4B` | `Qwen/Qwen3-4B` | `1cfa9a7208912126459214e8b04321603b3df60c` | Qwen3 |
+| `Qwen3-8B` | `Qwen/Qwen3-8B` | `b968826d9c46dd6066d109eabc6255188de91218` | Qwen3 |
+| `DeepSeek-R1-Distill-Llama-8B` | `deepseek-ai/DeepSeek-R1-Distill-Llama-8B` | `6a6f4aa4197940add57724a7707d069478df56b1` | Llama 3.1 |
+| `Mistral-7B-Instruct-v0.3` | `mistralai/Mistral-7B-Instruct-v0.3` | `c170c708c41dac9275d15a8fff4eca08d52bab71` | Mistral |
+
+The common cross-family representation view is `answer`. Explicit reasoning-span analyses are secondary and run only on checkpoints whose frozen output format exposes a parseable reasoning span.
+
 ### 3. Build and independently screen benign calibration traffic
 
 Natural calibration prompts come from a pinned, deterministic sample of WildChat. Upstream moderation is only a prefilter; it never assigns a negative label.
@@ -131,6 +142,7 @@ uv run python -m cli.generate_task_rollouts \
   --output data/rollouts/Qwen3-4B/benign_calibration.jsonl \
   --model Qwen/Qwen3-4B \
   --model_revision 1cfa9a7208912126459214e8b04321603b3df60c \
+  --max_new_tokens 1024 \
   --device mps
 
 uv run python -m cli.prepare_benign_screening \
@@ -139,7 +151,7 @@ uv run python -m cli.prepare_benign_screening \
 
 uv run python -m cli.merge_benign_screening \
   --rollouts data/rollouts/Qwen3-4B/benign_calibration.jsonl \
-  --ratings data/screening/Qwen3-4B/rater_a.jsonl data/screening/Qwen3-4B/rater_b.jsonl \
+  --ratings data/screening/Qwen3-4B/rater_a_completed.jsonl data/screening/Qwen3-4B/rater_b_completed.jsonl \
   --output_annotations data/annotations/Qwen3-4B/benign_calibration.jsonl \
   --report data/audits/Qwen3-4B/benign_screening.json
 
@@ -155,6 +167,7 @@ uv run python -m cli.audit_rollout_dataset \
 ```
 
 Each accepted response must receive unanimous eligibility decisions from at least two distinct, model-identity-blinded raters. Ratings are bound to the exact prompt and response hash. A failed criterion, disagreement, stale hash, or missing rating causes exclusion; it never becomes a label of 0.
+Rollouts that stop at `max_new_tokens` are rejected before handoff so raters are not asked to screen truncated responses. Each returned file must retain the assigned batch order and its assigned, distinct annotator ID.
 
 ### 4. Adjudicate and merge behavior labels
 

@@ -55,6 +55,22 @@ def validate_benign_rollout(row: dict[str, Any]) -> None:
         "generated_by_model"
     ) is not True:
         raise ValueError(f"Rollout {rollout_id} is not an on-policy model response")
+    generation = row.get("generation")
+    if isinstance(generation, dict):
+        stop_reason = generation.get("stop_reason")
+        response_token_count = generation.get("response_token_count")
+        max_new_tokens = generation.get("max_new_tokens")
+        hit_length_cap = (
+            isinstance(response_token_count, int)
+            and isinstance(max_new_tokens, int)
+            and response_token_count >= max_new_tokens
+        )
+        if stop_reason == "max_new_tokens" or (
+            stop_reason is None and hit_length_cap
+        ):
+            raise ValueError(
+                f"Rollout {rollout_id} hit max_new_tokens and is not eligible for benign screening"
+            )
     prompts = validate_messages(row.get("prompt_messages"), allow_assistant=False)
     messages = validate_messages(row.get("messages"), allow_assistant=True)
     if messages[:-1] != prompts or messages[-1]["content"] != row.get("response_text"):

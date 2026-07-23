@@ -3,7 +3,7 @@ protocol_stage: pilot
 results_dir: phase5_main_research_results
 overwrite: false
 bootstrap_samples: 1000
-views: answer,reasoning
+views: answer
 layers: all
 probes: P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis
 k_values: 1,4,8
@@ -65,3 +65,19 @@ models:
       sycophancy: outputs/final_features/Qwen3-8B/sycophancy_main
       motivated_reasoning: outputs/final_features/Qwen3-8B/motivated_reasoning_main
       cot_distortion: outputs/final_features/Qwen3-8B/cot_distortion_main
+  - name: DeepSeek-R1-Distill-Llama-8B
+    model_id: deepseek-ai/DeepSeek-R1-Distill-Llama-8B
+    model_revision: 6a6f4aa4197940add57724a7707d069478df56b1
+    family: Llama3.1
+    feature_dirs:
+      sycophancy: outputs/final_features/DeepSeek-R1-Distill-Llama-8B/sycophancy_main
+      motivated_reasoning: outputs/final_features/DeepSeek-R1-Distill-Llama-8B/motivated_reasoning_main
+      cot_distortion: outputs/final_features/DeepSeek-R1-Distill-Llama-8B/cot_distortion_main
+  - name: Mistral-7B-Instruct-v0.3
+    model_id: mistralai/Mistral-7B-Instruct-v0.3
+    model_revision: c170c708c41dac9275d15a8fff4eca08d52bab71
+    family: Mistral
+    feature_dirs:
+      sycophancy: outputs/final_features/Mistral-7B-Instruct-v0.3/sycophancy_main
+      motivated_reasoning: outputs/final_features/Mistral-7B-Instruct-v0.3/motivated_reasoning_main
+      cot_distortion: outputs/final_features/Mistral-7B-Instruct-v0.3/cot_distortion_main

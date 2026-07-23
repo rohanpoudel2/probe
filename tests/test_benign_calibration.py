@@ -42,6 +42,11 @@ def _rollout(rollout_id: str = "rollout-1"):
         "response_text": response,
         "data_origin": "on_policy_generation",
         "generated_by_model": True,
+        "generation": {
+            "max_new_tokens": 256,
+            "response_token_count": 18,
+            "stop_reason": "eos_token",
+        },
         # These fields must not be copied into the blinded template.
         "model_id": "org/secret-model",
         "model_revision": "a" * 40,
@@ -125,3 +130,14 @@ def test_screening_hash_prevents_rating_a_different_response() -> None:
     rating["screened_text_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="hash mismatch"):
         merge_screening_ratings([rollout], [rating])
+
+
+def test_length_capped_rollout_is_rejected_before_human_screening() -> None:
+    rollout = _rollout()
+    rollout["generation"] = {
+        "max_new_tokens": 200,
+        "response_token_count": 200,
+        "stop_reason": "max_new_tokens",
+    }
+    with pytest.raises(ValueError, match="hit max_new_tokens"):
+        screening_template(rollout, batch_seed=42)

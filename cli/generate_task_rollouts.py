@@ -73,14 +73,53 @@ def _git_provenance() -> dict[str, object]:
         return {"code_commit": "unknown", "code_dirty": None}
 
 
-def _split_reasoning(response: str) -> tuple[str | None, str]:
-    stripped = response.strip()
-    if "<think>" in stripped and "</think>" in stripped:
-        before, remainder = stripped.split("<think>", 1)
-        reasoning, after = remainder.split("</think>", 1)
-        final_answer = (before + after).strip()
-        return reasoning.strip() or None, final_answer or stripped
-    return None, stripped
+def _clean_model_text(text: str, special_tokens: list[str] | tuple[str, ...]) -> str:
+    cleaned = text
+    for token in sorted(
+        (token for token in special_tokens if token),
+        key=len,
+        reverse=True,
+    ):
+        cleaned = cleaned.replace(token, "")
+    return cleaned.strip()
+
+
+def _split_reasoning(
+    raw_response: str,
+    *,
+    cleaned_response: str | None = None,
+    special_tokens: list[str] | tuple[str, ...] = (),
+) -> tuple[str | None, str]:
+    """Separate registered visible reasoning tags before special-token removal."""
+
+    stripped = raw_response.strip()
+    for opening, closing in (("<think>", "</think>"), ("[THINK]", "[/THINK]")):
+        if opening not in stripped or closing not in stripped:
+            continue
+        before, remainder = stripped.split(opening, 1)
+        reasoning, after = remainder.split(closing, 1)
+        reasoning = _clean_model_text(reasoning, special_tokens)
+        final_answer = _clean_model_text(before + after, special_tokens)
+        fallback = (cleaned_response or "").strip()
+        return reasoning or None, final_answer or fallback or stripped
+    return None, (cleaned_response or _clean_model_text(stripped, special_tokens)).strip()
+
+
+def _generation_stop_reason(
+    response_token_ids: list[int],
+    *,
+    eos_token_ids: int | list[int] | tuple[int, ...] | set[int] | None,
+    max_new_tokens: int,
+) -> str:
+    if isinstance(eos_token_ids, int):
+        registered_eos = {eos_token_ids}
+    else:
+        registered_eos = {int(token_id) for token_id in (eos_token_ids or [])}
+    if response_token_ids and response_token_ids[-1] in registered_eos:
+        return "eos_token"
+    if len(response_token_ids) >= max_new_tokens:
+        return "max_new_tokens"
+    return "stopping_criteria"
 
 
 def _rollout_id(
@@ -248,6 +287,9 @@ def main() -> None:
                 confidence_trace = build_generation_confidence_trace(
                     generated.scores, response_ids
                 )
+                raw_response = tokenizer.decode(
+                    response_ids, skip_special_tokens=False
+                ).strip()
                 response = tokenizer.decode(
                     response_ids, skip_special_tokens=True
                 ).strip()
@@ -255,7 +297,24 @@ def main() -> None:
                     raise RuntimeError(
                         f"Model produced an empty rollout for {scenario.scenario_id}"
                     )
-                reasoning, final_answer = _split_reasoning(response)
+                reasoning, final_answer = _split_reasoning(
+                    raw_response,
+                    cleaned_response=response,
+                    special_tokens=tuple(tokenizer.all_special_tokens),
+                )
+                response_token_ids = response_ids.detach().cpu().tolist()
+                eos_token_ids = getattr(
+                    model.generation_config,
+                    "eos_token_id",
+                    None,
+                )
+                if eos_token_ids is None:
+                    eos_token_ids = tokenizer.eos_token_id
+                stop_reason = _generation_stop_reason(
+                    response_token_ids,
+                    eos_token_ids=eos_token_ids,
+                    max_new_tokens=args.max_new_tokens,
+                )
                 messages = [
                     *scenario.messages,
                     {"role": "assistant", "content": response},
@@ -271,15 +330,18 @@ def main() -> None:
                     seed=rollout_seed,
                     generation={
                         **generation_spec,
+                        "thinking_enabled": not args.no_thinking,
+                        "stop_reason": stop_reason,
                         "prompt_token_count": prompt_length,
                         "response_token_count": int(len(response_ids)),
-                        "response_token_ids": response_ids.detach().cpu().tolist(),
+                        "response_token_ids": response_token_ids,
                         "confidence_trace": confidence_trace,
                     },
                     provenance={
                         **git,
                         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
                         "chat_template_sha256": chat_template_hash,
+                        "prompt_renderer": "chat_template",
                         "scenario_file": str(scenario_path.resolve()),
                         "scenario_file_sha256": scenario_file_sha256,
                     },
