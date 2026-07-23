@@ -43,27 +43,11 @@ models:
     chat_template_kwargs: {}
     system_prompt: *benign_screening_prompt
 
-  mistral_7b_benign:
+  granite_2b_benign:
     protocol_role: frozen_primary
-    model_id: mistralai/Mistral-7B-Instruct-v0.3
-    model_revision: c170c708c41dac9275d15a8fff4eca08d52bab71
-    tokenizer_revision: c170c708c41dac9275d15a8fff4eca08d52bab71
-    family: Mistral
-    license: Apache-2.0
-    max_length: 32768
-    padding_side: left
-    trust_remote_code: false
-    negative_label: A
-    positive_label: B
-    eligible_max_probability: 0.10
-    chat_template_kwargs: {}
-    system_prompt: *benign_screening_prompt
-
-  granite_8b_benign:
-    protocol_role: frozen_primary
-    model_id: ibm-granite/granite-3.3-8b-instruct
-    model_revision: e321999f425324d7e7b4a198f30c224329d76618
-    tokenizer_revision: e321999f425324d7e7b4a198f30c224329d76618
+    model_id: ibm-granite/granite-3.3-2b-instruct
+    model_revision: 707f574c62054322f6b5b04b6d075f0a8f05e0f0
+    tokenizer_revision: 707f574c62054322f6b5b04b6d075f0a8f05e0f0
     family: Granite
     license: Apache-2.0
     max_length: 131072

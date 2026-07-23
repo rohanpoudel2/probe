@@ -78,7 +78,7 @@ def test_pilot_validates_the_registered_benign_audit_protocol() -> None:
             "Qwen3": [
                 "phi4_mini_benign",
                 "olmo2_1b_benign",
-                "mistral_7b_benign",
+                "granite_2b_benign",
             ]
         },
         "min_screeners": 3,

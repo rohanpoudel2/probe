@@ -33,15 +33,15 @@ benign_screening_audit:
     Qwen3:
       - phi4_mini_benign
       - olmo2_1b_benign
-      - mistral_7b_benign
+      - granite_2b_benign
     Llama3.1:
       - phi4_mini_benign
       - olmo2_1b_benign
-      - mistral_7b_benign
+      - granite_2b_benign
     Mistral:
       - phi4_mini_benign
       - olmo2_1b_benign
-      - granite_8b_benign
+      - granite_2b_benign
   min_screeners: 3
   random_audit_size: 300
   risk_audit_size: 0

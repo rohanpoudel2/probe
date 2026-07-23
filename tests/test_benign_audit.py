@@ -304,10 +304,9 @@ def test_registered_benign_screeners_are_pinned_and_distinct() -> None:
         for key in (
             "phi4_mini_benign",
             "olmo2_1b_benign",
-            "mistral_7b_benign",
-            "granite_8b_benign",
+            "granite_2b_benign",
         )
     ]
-    assert len({spec["family"] for spec in specs}) == 4
+    assert len({spec["family"] for spec in specs}) == 3
     assert all(len(spec["model_revision"]) == 40 for spec in specs)
     assert all(spec["eligible_max_probability"] == 0.10 for spec in specs)

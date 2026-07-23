@@ -148,10 +148,10 @@ uv run python -m cli.generate_task_rollouts \
 uv run python -m cli.run_benign_auto_screening \
   --rollouts data/rollouts/Qwen3-4B/benign_calibration.jsonl \
   --screener_config experiments/baselines/benign_screening_models.yaml \
-  --screener_model_keys phi4_mini_benign,olmo2_1b_benign,mistral_7b_benign \
+  --screener_model_keys phi4_mini_benign,olmo2_1b_benign,granite_2b_benign \
   --monitored_family Qwen3 \
   --output data/screening/Qwen3-4B/automated_decisions.jsonl \
-  --batch_size 4 \
+  --batch_size 1 \
   --device mps
 
 uv run python -m cli.prepare_benign_audit \
@@ -193,6 +193,8 @@ uv run python -m cli.audit_rollout_dataset \
 ```
 
 The three frozen screeners come from distinct non-Qwen model families and see neither model identity nor monitor scores. A rollout enters the candidate pool only when every screener assigns at most 0.10 probability to ineligibility; all other cases remain abstentions. Two people independently rate the same seeded random sample of 300 automated acceptances in different orders. With zero false acceptances, the exact one-sided 95% upper bound is below 1%. If that bound exceeds 1%, no automated benign labels are written. Hash mismatches, missing ratings, and length-capped responses fail closed. Optional risk-enriched examples can be added with `--risk_audit_size`, but they are reported separately, do not estimate prevalence, and can never reinstate an automated abstention.
+
+The screeners are loaded sequentially and the largest has fewer than four billion parameters. `--batch_size 1` is the conservative setting for a 16 GB M-series Mac; use 2 or 4 only after confirming memory headroom on a 24 GB or larger machine.
 
 ### 4. Adjudicate and merge behavior labels
 
