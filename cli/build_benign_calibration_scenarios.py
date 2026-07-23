@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-# This executable script adds the repository root before importing project modules.
-# ruff: noqa: E402
-
 import argparse
 import hashlib
 import json
 import os
 import re
-import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from cli.common import load_yaml
 from data.rollout_schema import ScenarioRecord

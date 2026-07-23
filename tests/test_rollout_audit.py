@@ -23,7 +23,7 @@ def _row(rollout_id: str, scenario_id: str, group_id: str, condition: str, label
         "messages": [*prompt, {"role": "assistant", "content": response}],
         "response_text": response,
         "label": label,
-        "label_source": "deterministic_verifier",
+        "label_source": "executable_task_rule",
         "annotation_protocol": "fixture-v1",
         "model_id": "model",
         "model_revision": "abcdef1234567",

@@ -69,22 +69,6 @@ def _score_split(probe, bundle: Dict[str, np.ndarray], view: str) -> dict[str, n
     }
 
 
-def _bundle_suffix(probe_cls) -> str:
-    modified = getattr(probe_cls, "requires_modified_activations", None)
-    return "" if modified is None else f"_{modified}"
-
-
-def _make_probe(
-    probe_cls,
-    sae_release: str | None = None,
-    sae_id: str | None = None,
-    sae_device: str = "cpu",
-):
-    if getattr(probe_cls, "name", "") == "P5_sae":
-        return probe_cls(sae_release=sae_release, sae_id=sae_id, device=sae_device)
-    return probe_cls()
-
-
 def _metric_payload(
     prefix: str,
     scored: dict[str, np.ndarray],
@@ -100,8 +84,7 @@ def _metric_payload(
         f"{prefix}_auroc": compute_auroc(y, scores),
         f"{prefix}_auprc": compute_auprc(y, scores),
         f"{prefix}_recall_at_frozen_fpr": frozen_recall,
-        # Compatibility key: unlike the legacy implementation, this is now
-        # evaluated at the separately calibrated frozen threshold.
+        # Compatibility key evaluated at the separately calibrated threshold.
         f"{prefix}_recall_at_1pct_fpr": frozen_recall if np.isclose(max_fpr, 0.01) else float("nan"),
         f"{prefix}_fpr_at_frozen_threshold": compute_fpr_at_threshold(y, scores, threshold),
         f"{prefix}_oracle_recall_at_requested_fpr": compute_recall_at_fpr(y, scores, max_fpr),
@@ -314,14 +297,11 @@ def main() -> None:
     parser.add_argument("--balance_modes", default="balanced")
     parser.add_argument("--max_fpr", type=float, default=0.01)
     parser.add_argument("--min_calibration_negatives", type=int, default=1000)
-    parser.add_argument("--sae_release", default=None)
-    parser.add_argument("--sae_id", default=None)
-    parser.add_argument("--sae_device", default="cpu")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--allow_partial",
         action="store_true",
-        help="Return success despite failed runs; prohibited for final paper execution.",
+        help="Return success despite failed runs; prohibited for confirmatory execution.",
     )
     args = parser.parse_args()
 
@@ -348,12 +328,12 @@ def main() -> None:
         out_file.unlink()
 
     total = completed = failed = skipped_unsupported = 0
-    bundle_cache: Dict[tuple[str, str, int, str], Dict[str, np.ndarray]] = {}
+    bundle_cache: Dict[tuple[str, str, int], Dict[str, np.ndarray]] = {}
 
-    def _load_cached(features_dir: str, split: str, layer: int, suffix: str) -> Dict[str, np.ndarray]:
-        key = (features_dir, split, layer, suffix)
+    def _load_cached(features_dir: str, split: str, layer: int) -> Dict[str, np.ndarray]:
+        key = (features_dir, split, layer)
         if key not in bundle_cache:
-            bundle_cache[key] = load_feature_bundle(features_dir, split, layer, cache_suffix=suffix)
+            bundle_cache[key] = load_feature_bundle(features_dir, split, layer)
         return bundle_cache[key]
 
     calibration_dir = args.calibration_dir or args.source_dir
@@ -361,22 +341,21 @@ def main() -> None:
     summary_fsync_every = 128
     with out_file.open("a", encoding="utf-8") as summary_handle:
         for layer in layers:
-            # Feature bundles are keyed by (dir, split, layer, suffix) and never
+            # Feature bundles are keyed by (directory, split, layer) and never
             # reused across layers, so release the previous layer's arrays before
             # loading this one. This bounds host/unified memory to a single
             # layer's bundles instead of accumulating every layer's.
             bundle_cache.clear()
             for probe_name in probe_names:
                 probe_cls = TASK_PROBE_REGISTRY[probe_name]
-                suffix = _bundle_suffix(probe_cls)
-                source_train = _load_cached(args.source_dir, "train", layer, suffix)
+                source_train = _load_cached(args.source_dir, "train", layer)
                 source_calibration = _load_cached(
-                    calibration_dir, args.calibration_split, layer, suffix
+                    calibration_dir, args.calibration_split, layer
                 )
-                source_eval = _load_cached(args.source_dir, "eval", layer, suffix)
-                source_test = _load_cached(args.source_dir, "test", layer, suffix)
+                source_eval = _load_cached(args.source_dir, "eval", layer)
+                source_test = _load_cached(args.source_dir, "test", layer)
                 target_test = (
-                    _load_cached(args.target_dir, "test", layer, suffix)
+                    _load_cached(args.target_dir, "test", layer)
                     if args.target_dir
                     else None
                 )
@@ -395,12 +374,6 @@ def main() -> None:
                     )
 
                 probe_kwargs = None
-                if probe_name == "P5_sae":
-                    probe_kwargs = {
-                        "sae_release": args.sae_release,
-                        "sae_id": args.sae_id,
-                        "device": args.sae_device,
-                    }
                 for view in views:
                     for k in k_values:
                         for balance_mode in balance_modes:
@@ -497,7 +470,7 @@ def main() -> None:
     print(f"saved results to {out_file}")
     if failed and not args.allow_partial:
         raise RuntimeError(
-            f"{failed} runs failed. Inspect error_stage/error_message; final-paper runs forbid partial success."
+            f"{failed} runs failed. Inspect error_stage/error_message; confirmatory runs forbid partial success."
         )
 
 

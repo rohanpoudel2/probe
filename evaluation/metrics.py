@@ -124,7 +124,7 @@ def compute_recall_at_fpr(
 ) -> float:
     """Compute an oracle ROC summary using labels from the evaluated split.
 
-    This is retained for exploratory plots only. Paper claims and transfer
+    This is retained for exploratory plots only. Confirmatory claims and transfer
     results must use :func:`select_threshold_at_fpr` on a separate calibration
     split followed by :func:`compute_recall_at_threshold`.
     """

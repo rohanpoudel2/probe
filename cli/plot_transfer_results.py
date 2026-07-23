@@ -76,7 +76,9 @@ def plot_k_sweep(report: pd.DataFrame, metric: str, out_path: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Camera-ready style plots from frozen transfer report")
+    parser = argparse.ArgumentParser(
+        description="Plot cross-model transfer and label-budget results"
+    )
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--metric", default="transfer_recall_at_1pct_fpr_mean")
     args = parser.parse_args()
@@ -86,10 +88,10 @@ def main() -> None:
         raise FileNotFoundError(f"Missing {report_path}. Run build_frozen_transfer_report.py first.")
     report = pd.read_csv(report_path)
     outdir = Path(args.results_dir)
-    plot_cross_model(report, args.metric, outdir / "camera_ready_cross_model.png")
-    plot_k_sweep(report, args.metric, outdir / "camera_ready_k_sweep.png")
-    print(f"saved {outdir / 'camera_ready_cross_model.png'}")
-    print(f"saved {outdir / 'camera_ready_k_sweep.png'}")
+    plot_cross_model(report, args.metric, outdir / "cross_model_transfer.png")
+    plot_k_sweep(report, args.metric, outdir / "label_budget_scaling.png")
+    print(f"saved {outdir / 'cross_model_transfer.png'}")
+    print(f"saved {outdir / 'label_budget_scaling.png'}")
 
 
 if __name__ == "__main__":

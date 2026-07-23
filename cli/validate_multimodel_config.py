@@ -734,10 +734,6 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
     for key in REQUIRED_TOP_KEYS:
         if key not in cfg:
             raise ValueError(f"Missing top-level key: {key}")
-    if cfg["protocol_stage"] == "legacy_blocked":
-        raise ValueError(
-            f"Legacy protocol is intentionally blocked: {cfg.get('blocked_reason', 'unspecified')}"
-        )
     if cfg["protocol_stage"] not in {"pilot", "frozen"}:
         raise ValueError("protocol_stage must be 'pilot' or 'frozen'")
     if (
@@ -770,10 +766,6 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
     if int(cfg["min_calibration_negatives"]) < 1000:
         raise ValueError(
             "At least 1,000 negative calibration examples are required even for a pilot"
-        )
-    if cfg.get("run_steering", False) and cfg["protocol_stage"] == "frozen":
-        raise ValueError(
-            "Steering is not part of the frozen primary monitoring protocol"
         )
     run_falsification = bool(cfg.get("run_falsification_suite", False))
     falsification_bundle = _validate_falsification_registry(

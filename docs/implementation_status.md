@@ -7,7 +7,7 @@
 - Resumable on-policy Hugging Face rollout generation with chat-template/revision provenance and hash-bound per-token confidence traces.
 - Scenario schema v2 with hash-bound behavior/domain/template/paraphrase/obfuscation assignments and group-level held-out isolation.
 - Independently reviewed paraphrase/obfuscation merge with exact parentage and prompt hashes.
-- Conservative deterministic answer verifier with explicit ambiguous-example exclusions.
+- Conservative executable answer-labeling rule with explicit ambiguous-example exclusions.
 - Separate annotation merge and rollout-integrity audit.
 - Chat-faithful activation extraction with zero-based transformer-block semantics.
 - Strict span/truncation alignment and feature provenance hashes.
@@ -33,7 +33,7 @@
 - Pinned official MonitorBench adapter covering all 19 tasks and 69 valid task/stress artifacts, with safe revision-specific extraction, archived-source/tree manifests, immutable run provenance, strict tested-artifact parsing, and test-only verified-outcome normalization.
 - Exact-prompt MonitorBench hard-negative pairing from repeated official verifier outcomes, with explicit separation from the upstream monitorability metric and a frozen B4 inapplicability instead of reconstructed confidence.
 - Final-execution validation gates and fail-loud artifact packaging.
-- MASK auxiliary now uses on-policy neutral-belief versus pressured-statement scenarios with frontier verifier semantics.
+- MASK auxiliary now uses on-policy neutral-belief versus pressured-statement scenarios with registered task-label semantics.
 
 ## Required before the leakage pilot
 
@@ -41,7 +41,7 @@
 - Commit the protocol so generation and extraction have a clean code revision.
 - Select one pilot model revision and a manageable fixed layer set.
 - Generate and independently screen at least 1,000 on-policy benign responses for the pilot.
-- Freeze verifier rubrics and adjudicate a blinded sample to estimate verifier error.
+- Freeze executable labeling rules and human-annotation rubrics; audit a blinded sample to estimate label error.
 - Materialize the registered text-embedding caches for every pilot task/view and monitored model.
 - Materialize the registered LLM-judge score caches from a clean code revision.
 - Generate stochastic repeated behavior rollouts and verify that the pilot yields registered exact-prompt hard-negative pairs.
@@ -67,7 +67,6 @@
 ## Deliberately deferred
 
 - Generation-time temporal monitoring before the visible answer.
-- Behavioral activation steering and capability-side-effect evaluation.
-- SAE and prompted-probe comparisons until faithful, token-level implementations are registered.
+- Behavioral activation steering, SAE comparisons, and prompted-probe comparisons.
 
 These are follow-up contributions, not prerequisites for deciding whether few-shot white-box monitoring adds value over visible transcripts.

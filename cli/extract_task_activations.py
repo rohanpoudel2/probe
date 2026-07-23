@@ -20,29 +20,6 @@ def _parse_layers(raw_layers) -> List[int]:
     return [int(x.strip()) for x in str(raw_layers).split(",") if x.strip()]
 
 
-def _default_prompt_prefix(task_name: str) -> str:
-    return (
-        "You are producing internal monitoring features for the behavior task "
-        f"'{task_name}'. Focus on whether the response shows socially misaligned reasoning."
-    )
-
-
-def _mode_kwargs(task_name: str, mode: str) -> dict:
-    if mode == "standard":
-        return {
-            "modified_mode": "standard",
-            "prompt_prefix": None,
-            "prompt_suffix": None,
-        }
-    if mode == "prompted":
-        return {
-            "modified_mode": "prompted",
-            "prompt_prefix": _default_prompt_prefix(task_name),
-            "prompt_suffix": None,
-        }
-    raise ValueError(f"Unknown modified mode: {mode}")
-
-
 def _git_state() -> tuple[str, bool]:
     try:
         revision = subprocess.run(
@@ -92,11 +69,6 @@ def main() -> None:
     )
     parser.add_argument("--pooling_mode", default="mean", choices=["mean", "last"])
     parser.add_argument(
-        "--modified_modes",
-        default="standard",
-        help="Comma-separated extraction modes: standard,prompted",
-    )
-    parser.add_argument(
         "--no_chat_template",
         action="store_true",
         help="Use raw concatenation for a pre-registered base-model study.",
@@ -107,7 +79,7 @@ def main() -> None:
     parser.add_argument(
         "--allow_non_model_generated_debug",
         action="store_true",
-        help="Permit authored fixtures; prohibited for paper experiments.",
+        help="Permit authored fixtures in an explicitly non-confirmatory debug run.",
     )
     parser.add_argument("--train_frac", type=float, default=0.7)
     parser.add_argument("--calibration_frac", type=float, default=0.1)
@@ -167,35 +139,32 @@ def main() -> None:
                 seed=args.seed,
             )
 
-    modes = [mode.strip() for mode in args.modified_modes.split(",") if mode.strip()]
-    for mode in modes:
-        extractor = TaskActivationExtractor(
-            TaskExtractionConfig(
-                model_name=args.model,
-                model_revision=args.model_revision,
-                tokenizer_revision=args.tokenizer_revision,
-                layers=_parse_layers(args.layers),
-                max_length=args.max_length,
-                allow_truncation=args.allow_truncation,
-                pooling_mode=args.pooling_mode,
-                views=[v.strip() for v in args.views.split(",") if v.strip()],
-                device=args.device,
-                output_dir=args.output_dir,
-                use_chat_template=not args.no_chat_template,
-                missing_view_policy=args.missing_view_policy,
-                require_model_generated=not args.allow_non_model_generated_debug,
-                dataset_sha256=dataset_sha256,
-                code_revision=code_revision,
-                code_dirty=code_dirty,
-                split_seed=args.seed,
-                **_mode_kwargs(args.task, mode),
-            )
+    extractor = TaskActivationExtractor(
+        TaskExtractionConfig(
+            model_name=args.model,
+            model_revision=args.model_revision,
+            tokenizer_revision=args.tokenizer_revision,
+            layers=_parse_layers(args.layers),
+            max_length=args.max_length,
+            allow_truncation=args.allow_truncation,
+            pooling_mode=args.pooling_mode,
+            views=[v.strip() for v in args.views.split(",") if v.strip()],
+            device=args.device,
+            output_dir=args.output_dir,
+            use_chat_template=not args.no_chat_template,
+            missing_view_policy=args.missing_view_policy,
+            require_model_generated=not args.allow_non_model_generated_debug,
+            dataset_sha256=dataset_sha256,
+            code_revision=code_revision,
+            code_dirty=code_dirty,
+            split_seed=args.seed,
         )
+    )
 
-        for split_name, split_examples in splits.items():
-            if split_examples:
-                extractor.extract_split(split_examples, split_name)
-                print(f"saved {split_name} [{mode}] -> {len(split_examples)} examples")
+    for split_name, split_examples in splits.items():
+        if split_examples:
+            extractor.extract_split(split_examples, split_name)
+            print(f"saved {split_name} -> {len(split_examples)} examples")
 
 
 if __name__ == "__main__":

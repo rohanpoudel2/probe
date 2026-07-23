@@ -1,6 +1,6 @@
 import json
 
-from scripts.build_on_policy_scenarios import (
+from cli.build_on_policy_scenarios import (
     build_honesty_control_scenarios,
     build_motivated_reasoning_scenarios,
     build_sycophancy_scenarios,

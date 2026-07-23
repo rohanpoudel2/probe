@@ -3,7 +3,7 @@
 # Use it to pin the authoritative Hugging Face repos / revisions before you
 # build the final task-family JSONL files consumed by the benchmark pipeline.
 # The locked repos, revisions, splits, and file paths below are consumed by the
-# repo's automated raw-source fetch and dataset-build scripts.
+# repository's automated raw-source and scenario-building commands.
 
 sources:
   sycophancy_eval:
@@ -93,4 +93,4 @@ sources:
       status: no_verified_huggingface_dataset_found
       github_repo: https://github.com/ASTRAL-Group/MonitorBench
       github_zip: https://github.com/ASTRAL-Group/MonitorBench/archive/refs/heads/main.zip
-      paper_page: https://huggingface.co/papers/2603.28590
+      source_reference: https://arxiv.org/abs/2603.28590

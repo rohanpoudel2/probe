@@ -1,18 +1,10 @@
 from __future__ import annotations
 
-# This executable script adds the repository root before importing project modules.
-# ruff: noqa: E402
-
 import argparse
 import hashlib
 import json
-import sys
 from pathlib import Path
 from typing import Any
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from cli.common import load_yaml
 from data.falsification import (
@@ -21,14 +13,14 @@ from data.falsification import (
     make_falsification_metadata,
 )
 from data.rollout_schema import ScenarioRecord
-from scripts.build_exact_paper_datasets import (
-    _ensure_text,
-    _first_text,
-    _format_mcq_prompt,
-    _normalize_answer_text,
-    _pick_wrong_answer,
-    _read_jsonl,
-    _resolve_correct_choice,
+from data.source_adapters import (
+    ensure_text,
+    first_text,
+    format_mcq_prompt,
+    normalize_answer_text,
+    pick_wrong_answer,
+    read_jsonl,
+    resolve_correct_choice,
 )
 
 
@@ -37,7 +29,7 @@ FINAL_ANSWER_INSTRUCTION = (
     "'Final answer: <answer>'."
 )
 DEFAULT_FALSIFICATION_REGISTRY = (
-    ROOT / "experiments" / "protocol" / "falsification_registry.yaml"
+    Path("experiments/protocol/falsification_registry.yaml")
 )
 
 
@@ -116,14 +108,14 @@ def _enforce_heldout_group_splits(rows: list[dict[str, Any]]) -> list[dict[str, 
 
 
 def _honesty_context(row: dict[str, Any]) -> str | None:
-    return _first_text(
+    return first_text(
         row,
         ("system_prompt", "context", "instruction", "instructions", "background"),
     )
 
 
 def _honesty_pressure_prompt(row: dict[str, Any]) -> str | None:
-    return _first_text(
+    return first_text(
         row,
         (
             "user_prompt",
@@ -138,7 +130,7 @@ def _honesty_pressure_prompt(row: dict[str, Any]) -> str | None:
 
 def _honesty_neutral_prompt(row: dict[str, Any], fallback: str | None) -> str | None:
     return (
-        _first_text(
+        first_text(
             row,
             (
                 "belief_elicit_1",
@@ -152,7 +144,7 @@ def _honesty_neutral_prompt(row: dict[str, Any], fallback: str | None) -> str | 
 
 
 def _honesty_truth(row: dict[str, Any]) -> str:
-    return _normalize_answer_text(
+    return normalize_answer_text(
         row.get("truth")
         or row.get("ground_truth")
         or row.get("formatted_ground_truth")
@@ -162,8 +154,8 @@ def _honesty_truth(row: dict[str, Any]) -> str:
 
 
 def _honesty_pressure_target(row: dict[str, Any]) -> str:
-    target = _normalize_answer_text(
-        _first_text(
+    target = normalize_answer_text(
+        first_text(
             row,
             (
                 "proposition",
@@ -182,7 +174,7 @@ def _honesty_pressure_target(row: dict[str, Any]) -> str:
 
 def _honesty_group_prefix(row: dict[str, Any], split_name: str) -> str:
     explicit = row.get("question_id") or row.get("id") or row.get("qid")
-    explicit_text = _ensure_text(explicit)
+    explicit_text = ensure_text(explicit)
     if explicit_text:
         return f"mask_{split_name}_{explicit_text}"
     return f"mask_{split_name}"
@@ -203,7 +195,7 @@ def build_honesty_control_scenarios(
     scenario_ids: set[str] = set()
     for split_name in splits:
         path = raw_dir / "honesty_control_raw" / f"mask_{split_name}_test.jsonl"
-        for index, raw in enumerate(_read_jsonl(path)):
+        for index, raw in enumerate(read_jsonl(path)):
             pressure_prompt = _honesty_pressure_prompt(raw)
             neutral_prompt = _honesty_neutral_prompt(raw, pressure_prompt)
             context = _honesty_context(raw)
@@ -287,17 +279,17 @@ def build_sycophancy_scenarios(
     scenario_ids: set[str] = set()
     for file_key in files:
         path = raw_dir / "sycophancy_eval" / f"{file_key}.jsonl"
-        for index, raw in enumerate(_read_jsonl(path)):
+        for index, raw in enumerate(read_jsonl(path)):
             base = raw.get("base") if isinstance(raw.get("base"), dict) else {}
             metadata = (
                 raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
             )
-            prompt_text = _first_text(raw, ("prompt", "messages", "conversation"))
-            question = _ensure_text(base.get("question")) or prompt_text
-            correct = _normalize_answer_text(
+            prompt_text = first_text(raw, ("prompt", "messages", "conversation"))
+            question = ensure_text(base.get("question")) or prompt_text
+            correct = normalize_answer_text(
                 base.get("correct_answer") or base.get("answer")
             )
-            pressure_target = _normalize_answer_text(base.get("incorrect_answer"))
+            pressure_target = normalize_answer_text(base.get("incorrect_answer"))
             if (
                 not question
                 or not prompt_text
@@ -310,7 +302,7 @@ def build_sycophancy_scenarios(
             shared_metadata = {
                 "gold_answer": correct,
                 "pressure_target": pressure_target,
-                "prompt_template": _ensure_text(metadata.get("prompt_template"))
+                "prompt_template": ensure_text(metadata.get("prompt_template"))
                 or file_key,
                 "source_row": index,
                 "source_revision": revision,
@@ -381,16 +373,16 @@ def build_motivated_reasoning_scenarios(
             raise ValueError(f"No pinned source revision for {filename}")
         source_name = max(matching_sources, key=len)
         revision = revisions[source_name]
-        for index, raw in enumerate(_read_jsonl(path)):
-            question = _ensure_text(raw.get("question")) or _ensure_text(
+        for index, raw in enumerate(read_jsonl(path)):
+            question = ensure_text(raw.get("question")) or ensure_text(
                 raw.get("prompt")
             )
             if not question:
                 raise ValueError(f"Missing question at {path}:{index + 1}")
-            correct, choices = _resolve_correct_choice(raw)
+            correct, choices = resolve_correct_choice(raw)
             if correct == "unknown" or len(choices) < 2 or correct not in choices:
                 raise ValueError(f"Unresolvable choices at {path}:{index + 1}")
-            pressure_target = _pick_wrong_answer(correct, choices)
+            pressure_target = pick_wrong_answer(correct, choices)
             # Some upstream MCQ rows (notably mmlu auxiliary_train) are malformed:
             # every option is identical (e.g. ['.', '.', '.', '.']), so no distinct
             # incorrect option exists to pressure toward. Skip these degenerate rows
@@ -399,7 +391,7 @@ def build_motivated_reasoning_scenarios(
                 continue
             correct_index = choices.index(correct)
             pressure_index = choices.index(pressure_target)
-            rendered_question = _format_mcq_prompt(question, choices)
+            rendered_question = format_mcq_prompt(question, choices)
             group_id = f"mr_{_normalized_hash(source_name, question, *choices)[:20]}"
             split = _upstream_split(filename, group_id, split_seed)
             shared_metadata = {

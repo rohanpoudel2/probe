@@ -7,7 +7,7 @@ from typing import Dict, List
 import numpy as np
 
 
-LAYER_RE = re.compile(r"^(train|calibration|eval|test)_layer(-?\d+)(?:_[^.]+)?\.npz$")
+LAYER_RE = re.compile(r"^(train|calibration|eval|test)_layer(-?\d+)\.npz$")
 
 
 def infer_layers(features_dir: str) -> List[int]:
@@ -19,8 +19,8 @@ def infer_layers(features_dir: str) -> List[int]:
     return sorted(set(layers))
 
 
-def load_feature_bundle(features_dir: str, split: str, layer: int, cache_suffix: str = "") -> Dict[str, np.ndarray]:
-    path = Path(features_dir) / f"{split}_layer{layer}{cache_suffix}.npz"
+def load_feature_bundle(features_dir: str, split: str, layer: int) -> Dict[str, np.ndarray]:
+    path = Path(features_dir) / f"{split}_layer{layer}.npz"
     if not path.exists():
         raise FileNotFoundError(f"Missing feature bundle: {path}")
     with np.load(path, allow_pickle=False) as data:

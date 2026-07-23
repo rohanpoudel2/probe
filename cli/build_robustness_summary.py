@@ -32,12 +32,6 @@ def main() -> None:
         rows.append(row)
 
     out = pd.DataFrame(rows)
-    steering_path = results_dir / "task_steering_best.csv"
-    if steering_path.exists() and steering_path.stat().st_size > 0:
-        steering = pd.read_csv(steering_path)
-        if not steering.empty:
-            steering_grouped = steering.groupby(group_cols, dropna=False)["selectivity_score"].mean().reset_index()
-            out = out.merge(steering_grouped, how="left", on=group_cols)
     out_path = results_dir / "robustness_summary.csv"
     out.to_csv(out_path, index=False)
     print(f"saved {out_path}")

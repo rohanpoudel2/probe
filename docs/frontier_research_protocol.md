@@ -37,7 +37,7 @@ Exact and normalized prompt hashes must be checked across sources and splits. Se
 - Pin model and tokenizer commits.
 - Store prompts, outputs, token IDs, decoding settings, seeds, provenance, and registered statistics from the processed generation distribution for every emitted token.
 - Generate all registered conditions before examining activation results.
-- Use deterministic task verifiers whenever the behavior has an objective criterion.
+- Use executable task-labeling rules whenever the behavior has an objective criterion.
 - Send ambiguous cases to blinded adjudication under a frozen rubric.
 - Report exclusion counts, disagreement, and inter-rater reliability.
 - Preserve uncertain labels rather than coercing them into the negative class.
@@ -65,7 +65,7 @@ Frozen encoder baselines must pin the encoder and tokenizer commits, pooling, pa
 
 The LLM judge is a different model family from every monitored model in the frozen study. Its model and tokenizer commits, chat-template arguments, system prompt, decision labels, padding side, and context limit are locked. The interaction is delimited as untrusted data. Scores are the pairwise softmax over the two registered next-token label logits; free-text generation and answer parsing are prohibited. Label tokens must each append exactly one token in the rendered generation context. Few-shot demonstrations come only from the matched source-training sample. Target labels never enter prompts, score computation, or threshold fitting. Overlength prompts fail rather than truncate. Each cache is bound to the code revision, implementation hash, data hashes, exact demonstrations, rendered-prompt hashes, view, and judge specification; split payload hashes detect partial or altered caches.
 
-The output-confidence baseline uses only the monitored model's generation-time processed scores. Each natively generated rollout stores aligned selected-token log probabilities, entropies, top-1/top-2 probability margins, and top-1 indicators, protected by a content hash. A frozen 22-dimensional summary includes response length, distributional summaries, early/late confidence, and final-token confidence. The matched few-shot logistic classifier is fit on those summaries. Legacy rollouts without a valid trace are ineligible for B4; confidence must not be reconstructed by a later teacher-forced pass because that would change the measured quantity. The official MonitorBench tested-artifact contract does not serialize these distributions, so B4 is pre-registered as structurally unavailable for that target while the other visible-text baselines remain required.
+The output-confidence baseline uses only the monitored model's generation-time processed scores. Each natively generated rollout stores aligned selected-token log probabilities, entropies, top-1/top-2 probability margins, and top-1 indicators, protected by a content hash. A frozen 22-dimensional summary includes response length, distributional summaries, early/late confidence, and final-token confidence. The matched few-shot logistic classifier is fit on those summaries. Rollouts without a valid trace are ineligible for B4; confidence must not be reconstructed by a later teacher-forced pass because that would change the measured quantity. The official MonitorBench tested-artifact contract does not serialize these distributions, so B4 is pre-registered as structurally unavailable for that target while the other visible-text baselines remain required.
 
 The primary comparison is white-box TPR minus the best black-box TPR chosen without target-test labels. Standalone activation AUROC is secondary.
 
@@ -126,7 +126,7 @@ Steering is not part of the primary protocol. It can become a follow-up only aft
 ### C. Freeze
 
 - Final behaviors, model families, sample sizes, exclusions, layer rule, metrics, primary comparisons, and five-axis/hard-negative falsification comparisons are registered.
-- Baseline implementations and verifiers are frozen.
+- Baseline implementations, executable labeling rules, and human-annotation rubrics are frozen.
 - Final-test labels remain inaccessible to selection code.
 
 ### D. Full execution

@@ -36,7 +36,6 @@ seeds: 10
 balance_modes: balanced
 max_fpr: 0.01
 min_calibration_negatives: 1000
-run_steering: false
 
 task_pairs:
   - source_task: sycophancy

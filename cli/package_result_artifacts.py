@@ -29,7 +29,7 @@ def _latex_from_csv(csv_path: Path, tex_path: Path, nrows: int | None = None) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Package final draft assets for submission"
+        description="Package validated result tables, figures, and provenance"
     )
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--output_dir", default=None)
@@ -37,7 +37,7 @@ def main() -> None:
 
     results_dir = Path(args.results_dir)
     out_root = (
-        Path(args.output_dir) if args.output_dir else results_dir / "final_draft_assets"
+        Path(args.output_dir) if args.output_dir else results_dir / "result_artifacts"
     )
     tables = out_root / "tables"
     figures = out_root / "figures"
@@ -56,7 +56,6 @@ def main() -> None:
         "falsification_significance.csv",
         "task_geometry_summary.csv",
         "task_direction_alignment.csv",
-        "task_steering_best.csv",
         "negative_control_report.csv",
         "sanity_checks.csv",
         "ablation_summary.csv",
@@ -85,39 +84,36 @@ def main() -> None:
         )
 
     for name in [
-        "camera_ready_cross_model.png",
-        "camera_ready_k_sweep.png",
+        "cross_model_transfer.png",
+        "label_budget_scaling.png",
         "task_transfer_matrix.png",
-        "task_steering_tradeoff.png",
     ]:
         _copy_if_exists(results_dir / name, figures / name)
 
     manifest_lines = [
-        "Final draft asset bundle",
+        "Validated result artifact bundle",
         "",
-        "Suggested main paper tables:",
+        "Primary result tables:",
         "1. task_cross_model_table.tex",
         "2. task_cross_task_transfer.tex",
         "3. sanity_checks.tex",
         "4. falsification_slices.tex",
         "5. falsification_significance.tex",
         "",
-        "Suggested appendix tables:",
+        "Supplementary result tables:",
         "1. task_significance.tex",
         "2. task_geometry_summary.tex",
-        "3. task_steering_best.tex",
-        "4. negative_control_report.tex",
-        "5. ablation_summary.tex",
-        "6. falsification shift/pair predictions and frozen manifests (provenance/)",
+        "3. negative_control_report.tex",
+        "4. ablation_summary.tex",
+        "5. falsification shift/pair predictions and frozen manifests (provenance/)",
         "",
-        "Suggested figures:",
-        "1. camera_ready_cross_model.png",
-        "2. camera_ready_k_sweep.png",
+        "Result figures:",
+        "1. cross_model_transfer.png",
+        "2. label_budget_scaling.png",
         "3. task_transfer_matrix.png",
-        "4. task_steering_tradeoff.png",
     ]
-    (notes / "draft_asset_manifest.md").write_text("\n".join(manifest_lines))
-    print(f"packaged final draft assets under {out_root}")
+    (notes / "result_artifact_manifest.md").write_text("\n".join(manifest_lines))
+    print(f"packaged result artifacts under {out_root}")
 
 
 if __name__ == "__main__":

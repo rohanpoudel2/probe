@@ -101,16 +101,6 @@ def test_black_box_execution_requires_complete_inputs() -> None:
         validate_config(config, check_paths=False, final_protocol=False)
 
 
-def test_legacy_protocol_manifests_are_blocked() -> None:
-    for path in [
-        Path("experiments/controls/_legacy/honesty_auxiliary_manifest.yaml"),
-        Path("experiments/controls/_legacy/final_release_manifest.yaml"),
-        Path("experiments/controls/final_release_manifest.yaml"),
-    ]:
-        with pytest.raises(ValueError, match="Legacy protocol is intentionally blocked"):
-            validate_config(load_yaml(path), check_paths=False, final_protocol=False)
-
-
 def _write_feature_bundle(
     directory: Path,
     *,
@@ -180,11 +170,11 @@ def test_final_feature_validation_requires_auditable_nontruncated_schema(
         valid, model, "task", 1, ("train",), final_protocol=True
     )
 
-    legacy = tmp_path / "legacy"
-    _write_feature_bundle(legacy, schema_version="2")
+    unsupported = tmp_path / "unsupported"
+    _write_feature_bundle(unsupported, schema_version="2")
     with pytest.raises(ValueError, match="schema version 3"):
         _validate_feature_directory(
-            legacy, model, "task", 1, ("train",), final_protocol=True
+            unsupported, model, "task", 1, ("train",), final_protocol=True
         )
 
     truncated = tmp_path / "truncated"

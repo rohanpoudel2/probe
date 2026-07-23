@@ -4,7 +4,7 @@ This repository is being built around one falsifiable question:
 
 > With only a few matched labeled scenarios, does an activation monitor improve on the strongest transcript-only monitor at a threshold calibrated to 1% false-positive rate on benign traffic?
 
-No full end-to-end frontier experiments have been executed under the new protocol yet. The former pipeline authored both positive and negative completions; it is retained only as a blocked legacy debug fixture and is not valid frontier data.
+No full end-to-end frontier experiments have been executed under the new protocol yet. The former authored-completion pipeline and its fixtures have been removed because they are not valid data for this study.
 
 ## Scientific contract
 
@@ -12,7 +12,7 @@ The maintained path enforces these invariants:
 
 - Responses are generated on-policy by the monitored model.
 - Prompt scenarios contain no authored response or behavior label.
-- Labels are merged only after generation from a declared verifier or annotation protocol.
+- Labels are merged only after generation from an executable task rule or a blinded human-annotation protocol.
 - Few-shot `k` counts matched scenario groups; balanced training contains `2 * k` examples.
 - Train, calibration, selection/eval, and final-test groups are disjoint.
 - Every source/held-out shift assignment is registry-bound; held-out groups can occur only in test.
@@ -75,9 +75,9 @@ Scenario validation rejects `label`, `assistant_response`, `reasoning`, and othe
 Pinned SycophancyEval and motivated-reasoning question banks can be converted to this prompt-only schema without creating responses:
 
 ```bash
-uv run python scripts/fetch_exact_hf_sources.py --source sycophancy_eval --output_dir data/raw_sources
-uv run python scripts/fetch_exact_hf_sources.py --source motivated_reasoning_raw --output_dir data/raw_sources
-uv run python scripts/build_on_policy_scenarios.py \
+uv run python -m cli.fetch_exact_hf_sources --source sycophancy_eval --output_dir data/raw_sources
+uv run python -m cli.fetch_exact_hf_sources --source motivated_reasoning_raw --output_dir data/raw_sources
+uv run python -m cli.build_on_policy_scenarios \
   --task all \
   --raw_dir data/raw_sources \
   --output_dir data/scenarios
@@ -128,11 +128,11 @@ The common cross-family representation view is `answer`. Explicit reasoning-span
 Natural calibration prompts come from a pinned, deterministic sample of WildChat. Upstream moderation is only a prefilter; it never assigns a negative label.
 
 ```bash
-uv run python scripts/fetch_exact_hf_sources.py \
+uv run python -m cli.fetch_exact_hf_sources \
   --source benign_calibration_raw \
   --output_dir data/raw_sources
 
-uv run python scripts/build_benign_calibration_scenarios.py \
+uv run python -m cli.build_benign_calibration_scenarios \
   --raw_data data/raw_sources/benign_calibration_raw/wildchat_train_sample.jsonl \
   --output data/scenarios/benign_calibration.jsonl \
   --report data/audits/benign_candidate_build.json
@@ -174,11 +174,11 @@ Rollouts that stop at `max_new_tokens` are rejected before handoff so raters are
 Annotations are a separate JSONL keyed by `rollout_id`. Every annotation requires:
 
 - binary `label`;
-- `label_source`, such as a deterministic task verifier or blinded adjudication;
+- `label_source`, such as an executable task rule or blinded human annotation;
 - `annotation_protocol`, identifying the frozen rubric/version.
 
 ```bash
-uv run python -m cli.verify_rollout_labels \
+uv run python -m cli.assign_task_labels \
   --rollouts data/rollouts/Qwen3-4B/sycophancy.jsonl \
   --output data/annotations/Qwen3-4B/sycophancy.jsonl
 
@@ -217,7 +217,7 @@ revision-specific directory, and writes a manifest that re-hashes the complete
 tree and critical evaluator files:
 
 ```bash
-uv run python scripts/fetch_exact_hf_sources.py \
+uv run python -m cli.fetch_exact_hf_sources \
   --source cot_monitorability_raw \
   --output_dir data/raw_sources
 ```
@@ -225,7 +225,7 @@ uv run python scripts/fetch_exact_hf_sources.py \
 Run the upstream code at the pinned commit using all official task/stress pairs,
 then copy and complete `experiments/protocol/monitorbench_run_manifest.example.yaml`.
 The resolved run manifest must pin the evaluated model, tokenizer, chat template,
-generation config, and verifier model. Importing is read-only with respect to the
+generation config, and upstream evaluation model. Importing is read-only with respect to the
 official results and does not run a model:
 
 ```bash
@@ -237,7 +237,7 @@ uv run python -m cli.import_monitorbench_rollouts \
 ```
 
 The final importer requires all 69 registered task/stress artifacts (19 tasks;
-`original` only for the 12 input-intervention tasks), boolean verifier results
+`original` only for the 12 input-intervention tasks), boolean upstream task outcomes
 aligned one-to-one with responses, both outcome labels, and at least one
 exact-prompt matched pair. `--allow_partial_pilot` is available only for schema
 smoke tests and marks every row ineligible for the main study.
@@ -347,7 +347,7 @@ uv run python -m cli.run_llm_judge_baselines \
   --min_calibration_negatives 1000
 ```
 
-The output-confidence baseline learns from the generation-time log-probability, entropy, top-1 margin, and length summaries stored in each rollout. It refuses legacy rollouts without aligned confidence traces.
+The output-confidence baseline learns from the generation-time log-probability, entropy, top-1 margin, and length summaries stored in each rollout. It refuses rollouts without aligned confidence traces.
 
 ```bash
 uv run python -m cli.run_output_confidence_baselines \
@@ -469,9 +469,5 @@ Use one command to force model-backed execution onto MPS. If memory is tight, re
 ```bash
 uv run python -m cli.run_frontier_experiments --device mps
 ```
-
-## Legacy warning
-
-Legacy authored-completion workflows are intentionally non-blocking for the active frontier stack and are not required for current execution.
 
 Pinned raw-source metadata remains in `experiments/data/huggingface_source_lock.yaml`; MonitorBench is locked to a commit, archive checksum, critical-file hashes, and complete extracted-tree manifest rather than a moving branch.

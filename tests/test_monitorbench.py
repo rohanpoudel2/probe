@@ -28,7 +28,7 @@ from data.monitorbench import (
     render_monitorbench_agent_conversation,
     validate_monitorbench_source_manifest,
 )
-from scripts.fetch_exact_hf_sources import _install_monitorbench_archive
+from cli.fetch_exact_hf_sources import _install_monitorbench_archive
 from tasks.cot_distortion import CoTDistortionTask
 
 

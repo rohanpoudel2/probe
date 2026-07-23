@@ -13,8 +13,6 @@ class Probe(ABC):
     """
 
     name: str = "base"
-    requires_modified_activations: str | None = None  # "prompted" or None
-    cache_suffix: str = ""
     scores_are_probabilities: bool = False
     minimum_class_counts: dict[int, int] = {0: 1, 1: 1}
 

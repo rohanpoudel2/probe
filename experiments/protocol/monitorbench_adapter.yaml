@@ -7,7 +7,7 @@ source:
   archive_url: https://github.com/ASTRAL-Group/MonitorBench/archive/43dda5994bfb16d34b1c30d4b3482d78a714e640.zip
   archive_sha256: fba6b9d5aa4f4b3f5fe864a77b47346523f27bf16b20a1ecf880559947ed6f46
   license: MIT
-  paper: arXiv:2603.28590
+  source_reference: arXiv:2603.28590
   critical_files:
     LICENSE: 9ebdae421b08b552f8edd69b053429fd9c8a37b44684fccba1d36aad4b8f3aef
     main.py: dfee40da50b99b06273bb611c7b918bd0435b0abf996a76f221073d79af4e646

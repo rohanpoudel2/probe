@@ -28,7 +28,7 @@ def test_permute_features_breaks_alignment_but_preserves_labels_and_ids(tmp_path
     assert transformed["model_name"].item() == "fixture"
 
 
-def test_legacy_shuffle_rows_is_rejected(tmp_path) -> None:
+def test_row_level_shuffle_is_rejected(tmp_path) -> None:
     source = tmp_path / "source.npz"
     target = tmp_path / "target.npz"
     _write_bundle(source)

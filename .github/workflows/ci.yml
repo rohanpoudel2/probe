@@ -25,7 +25,7 @@ jobs:
         run: uv sync --locked --extra dev
 
       - name: Compile Python sources
-        run: uv run python -m compileall -q cli data evaluation extraction features interventions probes scripts task_benchmark tasks tests
+        run: uv run python -m compileall -q cli data evaluation extraction features probes task_benchmark tasks tests
 
       - name: Run integrity suite
         run: uv run pytest

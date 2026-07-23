@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-# This executable script adds the repository root before importing project modules.
-# ruff: noqa: E402
-
 import argparse
 import hashlib
 import io
@@ -12,7 +9,6 @@ import os
 import re
 import shutil
 import stat
-import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -21,10 +17,6 @@ from pathlib import PurePosixPath
 from typing import Iterable
 
 from datasets import load_dataset
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from cli.common import load_yaml
 from data.monitorbench import (
@@ -328,7 +320,7 @@ def _install_monitorbench_archive(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Fetch the exact upstream Hugging Face sources locked for the paper."
+        description="Fetch the exact upstream sources locked for the registered study."
     )
     parser.add_argument(
         "--source",

@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from cli.common import load_yaml, run_cmd
+from cli.common import run_cmd
 
 
 def _add_device(cmd: list[str], device: str | None) -> list[str]:
@@ -151,25 +151,6 @@ def main() -> None:
             "No experiments selected. Remove --no-main or --no-honesty, or pass "
             "--run-appendix-ablations."
         )
-
-    manifests: list[str] = []
-    if not args.no_main:
-        manifests.append(args.main_config)
-    if not args.no_main:
-        manifests.append(args.main_ablation_config)
-    if not args.no_honesty:
-        manifests.append(args.honesty_config)
-    for manifest in manifests:
-        cfg = load_yaml(manifest)
-        stage = str(cfg.get("protocol_stage", "pilot")).lower()
-        if stage == "legacy_blocked":
-            print(f"Skipping legacy-blocked manifest: {manifest}")
-            if manifest == args.main_config:
-                raise RuntimeError(
-                    "Main manifest is legacy_blocked; aborting to avoid invalid pipeline."
-                )
-            # Auxiliary configs should be explicitly opted in when needed.
-            continue
 
     commands: list[list[str]] = []
     if not args.no_main:

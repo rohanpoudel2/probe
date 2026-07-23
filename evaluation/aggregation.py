@@ -1,4 +1,4 @@
-"""Aggregate result rows into paper ready summary tables."""
+"""Aggregate result rows into release-ready summary tables."""
 
 from __future__ import annotations
 

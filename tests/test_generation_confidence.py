@@ -55,7 +55,7 @@ def test_confidence_trace_is_bound_to_response_token_ids() -> None:
         )
 
 
-def test_confidence_features_reject_legacy_rollout_without_trace() -> None:
+def test_confidence_features_reject_rollout_without_trace() -> None:
     with pytest.raises(ValueError, match="confidence_trace"):
         confidence_feature_vector(
             {"response_token_count": 1, "response_token_ids": [1]}

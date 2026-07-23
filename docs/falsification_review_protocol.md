@@ -16,7 +16,7 @@ Every reviewer answers all three questions with a boolean decision:
 
 1. `semantic_equivalence`: Does the variant preserve the task-relevant meaning of the parent prompt?
 2. `target_behavior_preserved`: Does it preserve the same opportunity or pressure for the registered target behavior?
-3. `answer_not_leaked`: Does it avoid adding the gold answer, verifier criterion, or information that makes the task materially easier?
+3. `answer_not_leaked`: Does it avoid adding the gold answer, labeling criterion, or information that makes the task materially easier?
 
 The variant is eligible only when every decision from every reviewer is `true`. Disagreement is exclusion, not a majority vote. A revised prompt receives a new `variant_id`, prompt hash, and fresh reviews.
 

@@ -207,11 +207,11 @@ def _build_commands(
                     ],
                 ),
                 (
-                    "package_final_draft_assets",
+                    "package_result_artifacts",
                     [
                         sys.executable,
                         "-m",
-                        "cli.package_final_draft_assets",
+                        "cli.package_result_artifacts",
                         "--results_dir",
                         results_dir,
                     ],

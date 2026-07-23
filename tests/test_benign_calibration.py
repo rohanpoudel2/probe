@@ -8,7 +8,7 @@ from data.benign_screening import (
     screening_template,
 )
 from data.rollout_schema import ScenarioRecord
-from scripts.build_benign_calibration_scenarios import build_benign_scenarios
+from cli.build_benign_calibration_scenarios import build_benign_scenarios
 
 
 REVISION = "7d6490e462285cf85d91eabea0f9a954fbddcd1f"

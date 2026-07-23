@@ -16,7 +16,6 @@ dependencies = [
   "scikit-learn==1.8.0",
   "pandas==3.0.1",
   "PyYAML==6.0.3",
-  "sae-lens==6.39.0",
   "matplotlib==3.10.8",
   "datasets==4.8.4",
   "huggingface_hub==1.10.2",
@@ -38,9 +37,7 @@ packages = [
   "evaluation",
   "extraction",
   "features",
-  "interventions",
   "probes",
-  "scripts",
   "tasks",
   "task_benchmark",
 ]

@@ -419,7 +419,7 @@ def main() -> None:
         [
             sys.executable,
             "-m",
-            "cli.plot_camera_ready_task_results",
+            "cli.plot_transfer_results",
             "--results_dir",
             str(results_dir),
         ]
@@ -435,21 +435,6 @@ def main() -> None:
             str(results_dir),
         ]
     )
-    if cfg.get("run_steering", False):
-        steering_cmd = [
-            sys.executable,
-            "-m",
-            "cli.run_steering_suite",
-            "--config",
-            args.config,
-            "--results_dir",
-            str(results_dir),
-        ]
-        if args.device is not None:
-            steering_cmd.extend(["--device", args.device])
-        run_cmd(
-            steering_cmd
-        )
 
 
 if __name__ == "__main__":

@@ -49,19 +49,6 @@ def main() -> None:
             "value": p_ok,
         })
 
-    steering_path = results_dir / "task_steering_best.csv"
-    if steering_path.exists() and steering_path.stat().st_size > 0:
-        try:
-            steering = pd.read_csv(steering_path)
-        except pd.errors.EmptyDataError:
-            steering = pd.DataFrame()
-        selectivity = float(steering["selectivity_score"].mean()) if (not steering.empty and "selectivity_score" in steering.columns) else float("nan")
-        checks.append({
-            "check_name": "steering_selectivity_positive",
-            "passed": bool(selectivity > 0.0),
-            "value": selectivity,
-        })
-
     out_df = pd.DataFrame(checks)
     out_csv = results_dir / "sanity_checks.csv"
     out_json = results_dir / "sanity_checks.json"

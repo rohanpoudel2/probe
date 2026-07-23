@@ -24,9 +24,6 @@ class TaskExtractionConfig:
     allow_truncation: bool = False
     pooling_mode: str = "mean"
     views: Optional[List[str]] = None
-    modified_mode: str = "standard"
-    prompt_prefix: Optional[str] = None
-    prompt_suffix: Optional[str] = None
     output_dir: str = "task_activations"
     use_chat_template: bool = True
     missing_view_policy: str = "error"
@@ -144,10 +141,6 @@ class TaskActivationExtractor:
                 f"Example {example.example_id} is explicitly ineligible for the main study"
             )
         segments = dict(example.build_segments())
-        if self.cfg.prompt_prefix:
-            segments = {"task_prompt": self.cfg.prompt_prefix, **segments}
-        if self.cfg.prompt_suffix and "prompt" in segments:
-            segments["prompt"] = segments["prompt"] + self.cfg.prompt_suffix
         return {name: text for name, text in segments.items() if isinstance(text, str) and text}
 
     @staticmethod
@@ -481,9 +474,6 @@ class TaskActivationExtractor:
                             "allow_truncation": self.cfg.allow_truncation,
                             "pooling_mode": self.cfg.pooling_mode,
                             "views": wanted_views,
-                            "modified_mode": self.cfg.modified_mode,
-                            "prompt_prefix": self.cfg.prompt_prefix,
-                            "prompt_suffix": self.cfg.prompt_suffix,
                             "use_chat_template": self.cfg.use_chat_template,
                             "missing_view_policy": self.cfg.missing_view_policy,
                             "require_model_generated": self.cfg.require_model_generated,
@@ -494,5 +484,4 @@ class TaskActivationExtractor:
                 ).hexdigest()
             )
             arrays["dropped_example_ids"] = np.asarray("\n".join(dropped_ids))
-            suffix = "" if self.cfg.modified_mode == "standard" else f"_{self.cfg.modified_mode}"
-            np.savez_compressed(outdir / f"{split_name}_layer{layer}{suffix}.npz", **arrays)
+            np.savez_compressed(outdir / f"{split_name}_layer{layer}.npz", **arrays)

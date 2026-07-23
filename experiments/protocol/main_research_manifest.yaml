@@ -11,7 +11,6 @@ seeds: 10
 balance_modes: balanced
 max_fpr: 0.01
 min_calibration_negatives: 1000
-run_steering: false
 run_black_box_baselines: false
 run_falsification_suite: false
 falsification_registry: experiments/protocol/falsification_registry.yaml
