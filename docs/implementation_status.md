@@ -19,7 +19,8 @@
 - Pinned independent Phi-4 zero/few-shot judge with contextual forced-choice token validation, no-truncation gates, and resumable content-hashed score caches.
 - Matched output-confidence logistic baseline over a frozen 22-feature generation-trace representation.
 - Pinned WildChat natural-traffic candidate sampling that never copies upstream assistant outputs.
-- Model-identity-blinded two-rater benign screening with exact-text hashes, conservative exclusions, and agreement reporting.
+- Pinned distinct-family automated benign consensus with conservative abstention, exact-text hashes, and model-identity/monitor-score blinding.
+- Seeded 300-record two-rater validation audits with exact one-sided false-acceptance bounds, fail-closed annotation release, and agreement reporting.
 - A calibration-only task loader plus merge/audit gates that reject silently assigned benign labels.
 - Release-orchestrator and final-validator wiring for TF-IDF, cached embeddings, zero/few-shot judging, and output confidence.
 - Exact-trigger-prompt hard-negative manifests plus per-monitor row-level shift and paired-hard-negative evaluation artifacts.
@@ -40,8 +41,8 @@
 - Finish and validate the exact scenario inventory intended for the pilot.
 - Commit the protocol so generation and extraction have a clean code revision.
 - Select one pilot model revision and a manageable fixed layer set.
-- Generate and independently screen at least 1,000 on-policy benign responses for the pilot.
-- Freeze executable labeling rules and human-annotation rubrics; audit a blinded sample to estimate label error.
+- Generate and automatically screen at least 1,000 on-policy benign responses for the pilot.
+- Complete the frozen two-rater random audit and confirm that its 95% false-acceptance upper bound is at most 1%.
 - Materialize the registered text-embedding caches for every pilot task/view and monitored model.
 - Materialize the registered LLM-judge score caches from a clean code revision.
 - Generate stochastic repeated behavior rollouts and verify that the pilot yields registered exact-prompt hard-negative pairs.

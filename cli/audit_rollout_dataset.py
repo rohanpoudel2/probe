@@ -7,6 +7,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from data.benign_audit import (
+    AUDIT_LABEL_SOURCE,
+    AUDIT_PROTOCOL,
+    validate_accepted_audit_metadata,
+)
 from data.benign_screening import (
     ANNOTATION_PROTOCOL,
     LABEL_SOURCE,
@@ -155,31 +160,42 @@ def audit_rows(
                 )
             if label != 0:
                 errors.append(f"{prefix}: benign calibration rows must have label 0")
-            if (
-                label_source != LABEL_SOURCE
-                or annotation_protocol != ANNOTATION_PROTOCOL
-            ):
-                errors.append(
-                    f"{prefix}: benign row lacks the frozen independent-screening protocol"
-                )
             screening = row.get("annotation_metadata")
-            if not isinstance(screening, dict):
-                errors.append(f"{prefix}: benign row lacks screening metadata")
+            if (
+                label_source == AUDIT_LABEL_SOURCE
+                and annotation_protocol == AUDIT_PROTOCOL
+            ):
+                try:
+                    validate_accepted_audit_metadata(row, screening)
+                except ValueError as err:
+                    errors.append(f"{prefix}: invalid benign audit metadata: {err}")
             else:
-                n_raters = screening.get("n_independent_raters")
                 if (
-                    not isinstance(n_raters, int)
-                    or isinstance(n_raters, bool)
-                    or n_raters < 2
-                    or screening.get("unanimous_eligible") is not True
+                    label_source != LABEL_SOURCE
+                    or annotation_protocol != ANNOTATION_PROTOCOL
                 ):
                     errors.append(
-                        f"{prefix}: benign row lacks unanimous two-rater eligibility"
+                        f"{prefix}: benign row lacks a frozen screening protocol"
                     )
-                if screening.get("screened_text_sha256") != screened_text_sha256(row):
-                    errors.append(
-                        f"{prefix}: benign screening text hash does not match the rollout"
-                    )
+                if not isinstance(screening, dict):
+                    errors.append(f"{prefix}: benign row lacks screening metadata")
+                else:
+                    n_raters = screening.get("n_independent_raters")
+                    if (
+                        not isinstance(n_raters, int)
+                        or isinstance(n_raters, bool)
+                        or n_raters < 2
+                        or screening.get("unanimous_eligible") is not True
+                    ):
+                        errors.append(
+                            f"{prefix}: benign row lacks unanimous two-rater eligibility"
+                        )
+                    if screening.get("screened_text_sha256") != screened_text_sha256(
+                        row
+                    ):
+                        errors.append(
+                            f"{prefix}: benign screening text hash does not match the rollout"
+                        )
 
         revision = str(row.get("model_revision", "")).strip()
         if not PINNED_REVISION_RE.fullmatch(revision):

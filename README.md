@@ -12,7 +12,7 @@ The maintained path enforces these invariants:
 
 - Responses are generated on-policy by the monitored model.
 - Prompt scenarios contain no authored response or behavior label.
-- Labels are merged only after generation from an executable task rule or a blinded human-annotation protocol.
+- Labels are merged only after generation from an executable task rule or a frozen, model-blinded protocol with independent human validation.
 - Few-shot `k` counts matched scenario groups; balanced training contains `2 * k` examples.
 - Train, calibration, selection/eval, and final-test groups are disjoint.
 - Every source/held-out shift assignment is registry-bound; held-out groups can occur only in test.
@@ -22,7 +22,7 @@ The maintained path enforces these invariants:
 - Model, tokenizer, dataset, code, and upstream-source revisions are pinned.
 - Final execution fails on partial runs or missing required artifacts.
 
-The complete protocol is in [docs/frontier_research_protocol.md](docs/frontier_research_protocol.md), the frozen negative-eligibility decisions are defined in [docs/benign_screening_rubric.md](docs/benign_screening_rubric.md), and transformed-prompt review is specified in [docs/falsification_review_protocol.md](docs/falsification_review_protocol.md).
+The complete protocol is in [docs/frontier_research_protocol.md](docs/frontier_research_protocol.md), the frozen negative-eligibility decisions are defined in [docs/benign_screening_rubric.md](docs/benign_screening_rubric.md), the human handoff uses [docs/benign_rater_instructions.md](docs/benign_rater_instructions.md), and transformed-prompt review is specified in [docs/falsification_review_protocol.md](docs/falsification_review_protocol.md).
 Current implementation coverage and remaining blockers are tracked in [docs/implementation_status.md](docs/implementation_status.md).
 
 ## Environment and tests
@@ -123,7 +123,7 @@ The monitored-model panel is pinned in the active manifests:
 
 The common cross-family representation view is `answer`. Explicit reasoning-span analyses are secondary and run only on checkpoints whose frozen output format exposes a parseable reasoning span.
 
-### 3. Build and independently screen benign calibration traffic
+### 3. Build, automatically screen, and independently audit benign calibration traffic
 
 Natural calibration prompts come from a pinned, deterministic sample of WildChat. Upstream moderation is only a prefilter; it never assigns a negative label.
 
@@ -145,15 +145,41 @@ uv run python -m cli.generate_task_rollouts \
   --max_new_tokens 1024 \
   --device mps
 
-uv run python -m cli.prepare_benign_screening \
+uv run python -m cli.run_benign_auto_screening \
   --rollouts data/rollouts/Qwen3-4B/benign_calibration.jsonl \
-  --output data/screening/Qwen3-4B/benign_template.jsonl
+  --screener_config experiments/baselines/benign_screening_models.yaml \
+  --screener_model_keys phi4_mini_benign,olmo2_1b_benign,mistral_7b_benign \
+  --monitored_family Qwen3 \
+  --output data/screening/Qwen3-4B/automated_decisions.jsonl \
+  --batch_size 4 \
+  --device mps
 
-uv run python -m cli.merge_benign_screening \
+uv run python -m cli.prepare_benign_audit \
   --rollouts data/rollouts/Qwen3-4B/benign_calibration.jsonl \
-  --ratings data/screening/Qwen3-4B/rater_a_completed.jsonl data/screening/Qwen3-4B/rater_b_completed.jsonl \
+  --automated_decisions data/screening/Qwen3-4B/automated_decisions.jsonl \
+  --monitored_family Qwen3 \
+  --min_screeners 3 \
+  --random_audit_size 300 \
+  --risk_audit_size 0 \
+  --selection_seed 9173 \
+  --output_consensus data/screening/Qwen3-4B/automated_consensus.jsonl \
+  --output_consensus_report data/audits/Qwen3-4B/automated_consensus.json \
+  --output_audit_manifest data/screening/Qwen3-4B/audit_manifest.json \
+  --output_template data/screening/Qwen3-4B/benign_audit_template.jsonl \
+  --rater_output rater-01 104729 data/screening/handoff/Qwen3-4B/rater_01/benign_screening_batch.jsonl \
+  --rater_output rater-02 130363 data/screening/handoff/Qwen3-4B/rater_02/benign_screening_batch.jsonl
+
+uv run python -m cli.merge_benign_audit \
+  --rollouts data/rollouts/Qwen3-4B/benign_calibration.jsonl \
+  --automated_decisions data/screening/Qwen3-4B/automated_decisions.jsonl \
+  --audit_manifest data/screening/Qwen3-4B/audit_manifest.json \
+  --ratings data/screening/Qwen3-4B/rater_01_completed.jsonl data/screening/Qwen3-4B/rater_02_completed.jsonl \
+  --monitored_family Qwen3 \
+  --min_screeners 3 \
+  --confidence_level 0.95 \
+  --max_false_acceptance_rate 0.01 \
   --output_annotations data/annotations/Qwen3-4B/benign_calibration.jsonl \
-  --report data/audits/Qwen3-4B/benign_screening.json
+  --report data/audits/Qwen3-4B/benign_screening_audit.json
 
 uv run python -m cli.merge_rollout_labels \
   --rollouts data/rollouts/Qwen3-4B/benign_calibration.jsonl \
@@ -166,8 +192,7 @@ uv run python -m cli.audit_rollout_dataset \
   --require_confidence_trace
 ```
 
-Each accepted response must receive unanimous eligibility decisions from at least two distinct, model-identity-blinded raters. Ratings are bound to the exact prompt and response hash. A failed criterion, disagreement, stale hash, or missing rating causes exclusion; it never becomes a label of 0.
-Rollouts that stop at `max_new_tokens` are rejected before handoff so raters are not asked to screen truncated responses. Each returned file must retain the assigned batch order and its assigned, distinct annotator ID.
+The three frozen screeners come from distinct non-Qwen model families and see neither model identity nor monitor scores. A rollout enters the candidate pool only when every screener assigns at most 0.10 probability to ineligibility; all other cases remain abstentions. Two people independently rate the same seeded random sample of 300 automated acceptances in different orders. With zero false acceptances, the exact one-sided 95% upper bound is below 1%. If that bound exceeds 1%, no automated benign labels are written. Hash mismatches, missing ratings, and length-capped responses fail closed. Optional risk-enriched examples can be added with `--risk_audit_size`, but they are reported separately, do not estimate prevalence, and can never reinstate an automated abstention.
 
 ### 4. Adjudicate and merge behavior labels
 

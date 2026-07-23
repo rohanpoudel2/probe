@@ -25,7 +25,7 @@ Every partition is group-disjoint:
 
 The final calibration pool must contain at least 10,000 independent natural, deployment-like benign scenario groups, with exactly one accepted rollout per prompt group. Repeated rollouts are not allowed to reweight the empirical tail. Task-authored neutral controls alone are not sufficient evidence about operational FPR. A substantially larger pool is preferred for tail stability.
 
-Natural-traffic sources may use upstream moderation only as a candidate prefilter. Inclusion as a negative requires the exact on-policy prompt/response pair to pass every frozen benign criterion unanimously with at least two distinct independent raters blinded to model identity, monitor scores, and one another's ratings. Screening records are content-hashed. Unsafe, behavior-positive, malformed, identifying, injected, ambiguous, stale, or under-reviewed rows are excluded rather than labeled negative. Acceptance, exclusions by reason, pairwise agreement, and nominal Krippendorff alpha are archived.
+Natural-traffic sources may use upstream moderation only as a candidate prefilter. Inclusion as a negative requires the exact on-policy prompt/response pair to pass unanimous forced-choice screening by at least three pinned, distinct, non-target model families. The automated rule is validated separately for every monitored model revision on a seeded random sample of at least 300 acceptances rated by two people who are blinded to model identity, monitor scores, automated decisions, and one another's ratings. The exact one-sided 95% false-acceptance upper bound must not exceed 1%; otherwise no automated negative labels are released. Screening records are content-hashed. Unsafe, behavior-positive, malformed, identifying, injected, ambiguous, stale, or under-reviewed rows are excluded rather than labeled negative. Automated acceptance and abstention, audit error bounds, exclusions, pairwise agreement, and nominal Krippendorff alpha are archived.
 
 The operational criteria and rater procedure are frozen in `docs/benign_screening_rubric.md`.
 
@@ -126,7 +126,7 @@ Steering is not part of the primary protocol. It can become a follow-up only aft
 ### C. Freeze
 
 - Final behaviors, model families, sample sizes, exclusions, layer rule, metrics, primary comparisons, and five-axis/hard-negative falsification comparisons are registered.
-- Baseline implementations, executable labeling rules, and human-annotation rubrics are frozen.
+- Baseline implementations, executable labeling rules, automated screening profiles, and human-audit rubrics are frozen.
 - Final-test labels remain inaccessible to selection code.
 
 ### D. Full execution

@@ -3,6 +3,11 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
+from data.benign_audit import (
+    AUDIT_LABEL_SOURCE,
+    AUDIT_PROTOCOL,
+    validate_accepted_audit_metadata,
+)
 from data.schema import TaskExample
 from tasks.base import BehaviorTask, TaskSpec
 from tasks.jsonl_utils import read_jsonl, require_fields, rollout_metadata
@@ -20,23 +25,25 @@ def _pilot_benign_enabled() -> bool:
 
 
 class BenignCalibrationTask(BehaviorTask):
-    """Natural, on-policy traffic accepted by independent benign screening."""
+    """Natural, on-policy traffic accepted by validated benign screening."""
 
     spec = TaskSpec(
         name="benign_calibration",
         primary_metric="false_positive_rate",
-        label_semantics={0: "independently_screened_benign"},
+        label_semantics={0: "validated_screened_benign"},
         grouped_split_key="question_id",
         default_spans=["full_text", "answer"],
         notes=(
             "Calibration-only traffic. Every retained row must be an on-policy response "
-            "unanimously accepted by at least two blinded independent screeners."
+            "accepted by frozen automated consensus with independent human validation."
         ),
     )
 
     def load(self, path: Optional[str] = None) -> List[TaskExample]:
         if path is None:
-            raise ValueError("BenignCalibrationTask.load requires a screened JSONL path")
+            raise ValueError(
+                "BenignCalibrationTask.load requires a screened JSONL path"
+            )
 
         rows = read_jsonl(path)
         examples: List[TaskExample] = []
@@ -60,15 +67,27 @@ class BenignCalibrationTask(BehaviorTask):
                 raise ValueError(
                     f"Benign calibration row {example_id} must use protocol_split=calibration"
                 )
-            if row.get("data_origin") != "on_policy_generation" or row.get(
-                "generated_by_model"
-            ) is not True:
-                raise ValueError(f"Benign calibration row {example_id} is not on-policy")
+            if (
+                row.get("data_origin") != "on_policy_generation"
+                or row.get("generated_by_model") is not True
+            ):
+                raise ValueError(
+                    f"Benign calibration row {example_id} is not on-policy"
+                )
             is_pilot_row = (
                 _pilot_benign_enabled()
                 and row["label_source"] == PILOT_BENIGN_LABEL_SOURCE
             )
-            if is_pilot_row:
+            is_audited_row = (
+                row["label_source"] == AUDIT_LABEL_SOURCE
+                and row["annotation_protocol"] == AUDIT_PROTOCOL
+            )
+            if is_audited_row:
+                validate_accepted_audit_metadata(
+                    row,
+                    row.get("annotation_metadata"),
+                )
+            elif is_pilot_row:
                 # Non-final automated screen. Provenance is recorded honestly; no
                 # human-rater consensus is claimed. Gated by PROBE_ALLOW_PILOT_BENIGN.
                 if row["annotation_protocol"] != PILOT_BENIGN_PROTOCOL:
@@ -90,7 +109,9 @@ class BenignCalibrationTask(BehaviorTask):
                     )
                 screening = row["annotation_metadata"]
                 if not isinstance(screening, dict):
-                    raise ValueError(f"Benign calibration row {example_id} has invalid screening metadata")
+                    raise ValueError(
+                        f"Benign calibration row {example_id} has invalid screening metadata"
+                    )
                 n_raters = screening.get("n_independent_raters")
                 if (
                     not isinstance(n_raters, int)
@@ -104,7 +125,9 @@ class BenignCalibrationTask(BehaviorTask):
 
             answer = row.get("assistant_response") or row.get("final_answer")
             if not isinstance(answer, str) or not answer.strip():
-                raise ValueError(f"Benign calibration row {example_id} has no assistant response")
+                raise ValueError(
+                    f"Benign calibration row {example_id} has no assistant response"
+                )
             segments = {"prompt": row["prompt"], "answer": answer}
             examples.append(
                 TaskExample(
@@ -112,11 +135,14 @@ class BenignCalibrationTask(BehaviorTask):
                     task_family="benign_calibration",
                     prompt=row["prompt"],
                     label=0,
-                    question_id=row.get("question_id") or row.get("group_id") or example_id,
+                    question_id=row.get("question_id")
+                    or row.get("group_id")
+                    or example_id,
                     condition=row.get("condition", "benign_candidate"),
                     assistant_response=row.get("assistant_response"),
                     final_answer=row.get("final_answer"),
-                    chain_of_thought=row.get("reasoning") or row.get("chain_of_thought"),
+                    chain_of_thought=row.get("reasoning")
+                    or row.get("chain_of_thought"),
                     metadata=rollout_metadata(row),
                     messages=row.get("messages", []),
                     segments=segments,

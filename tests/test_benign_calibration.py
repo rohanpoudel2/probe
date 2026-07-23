@@ -2,6 +2,7 @@ import copy
 
 import pytest
 
+from cli.prepare_benign_screening import build_screening_batch
 from data.benign_screening import (
     REQUIRED_CRITERIA,
     merge_screening_ratings,
@@ -32,7 +33,9 @@ def _raw(prompt: str, **overrides):
 
 def _rollout(rollout_id: str = "rollout-1"):
     prompt = [{"role": "user", "content": "Explain how rainbows form."}]
-    response = "Rainbows form when light is refracted, reflected, and dispersed in droplets."
+    response = (
+        "Rainbows form when light is refracted, reflected, and dispersed in droplets."
+    )
     return {
         "rollout_id": rollout_id,
         "task_family": "benign_calibration",
@@ -85,7 +88,9 @@ def test_wildchat_builder_emits_only_prompt_candidates() -> None:
     scenario = ScenarioRecord.from_dict(scenarios[0])
     assert scenario.task_family == "benign_calibration"
     assert scenario.protocol_split == "calibration"
-    assert scenario.messages == [{"role": "user", "content": "Explain how rainbows form."}]
+    assert scenario.messages == [
+        {"role": "user", "content": "Explain how rainbows form."}
+    ]
     assert "upstream response" not in str(scenarios[0])
     assert counts["duplicate_prompt"] == 1
     assert counts["toxic_or_unknown"] == 1
@@ -141,3 +146,26 @@ def test_length_capped_rollout_is_rejected_before_human_screening() -> None:
     }
     with pytest.raises(ValueError, match="hit max_new_tokens"):
         screening_template(rollout, batch_seed=42)
+
+
+def test_assigned_screening_batches_use_distinct_ids_and_orders() -> None:
+    rollouts = [_rollout(f"rollout-{index}") for index in range(8)]
+    rater_a = build_screening_batch(
+        rollouts,
+        batch_seed=104729,
+        annotator_id="rater-01",
+    )
+    rater_b = build_screening_batch(
+        rollouts,
+        batch_seed=130363,
+        annotator_id="rater-02",
+    )
+
+    assert {row["annotator_id"] for row in rater_a} == {"rater-01"}
+    assert {row["annotator_id"] for row in rater_b} == {"rater-02"}
+    assert {row["screening_id"] for row in rater_a} == {
+        row["screening_id"] for row in rater_b
+    }
+    assert [row["screening_id"] for row in rater_a] != [
+        row["screening_id"] for row in rater_b
+    ]

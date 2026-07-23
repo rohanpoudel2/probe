@@ -51,9 +51,10 @@ def validate_benign_rollout(row: dict[str, Any]) -> None:
         raise ValueError(f"Rollout {rollout_id} is not a benign-calibration candidate")
     if row.get("protocol_split") != "calibration":
         raise ValueError(f"Rollout {rollout_id} is not assigned to calibration")
-    if row.get("data_origin") != "on_policy_generation" or row.get(
-        "generated_by_model"
-    ) is not True:
+    if (
+        row.get("data_origin") != "on_policy_generation"
+        or row.get("generated_by_model") is not True
+    ):
         raise ValueError(f"Rollout {rollout_id} is not an on-policy model response")
     generation = row.get("generation")
     if isinstance(generation, dict):
@@ -65,16 +66,16 @@ def validate_benign_rollout(row: dict[str, Any]) -> None:
             and isinstance(max_new_tokens, int)
             and response_token_count >= max_new_tokens
         )
-        if stop_reason == "max_new_tokens" or (
-            stop_reason is None and hit_length_cap
-        ):
+        if stop_reason == "max_new_tokens" or (stop_reason is None and hit_length_cap):
             raise ValueError(
                 f"Rollout {rollout_id} hit max_new_tokens and is not eligible for benign screening"
             )
     prompts = validate_messages(row.get("prompt_messages"), allow_assistant=False)
     messages = validate_messages(row.get("messages"), allow_assistant=True)
     if messages[:-1] != prompts or messages[-1]["content"] != row.get("response_text"):
-        raise ValueError(f"Rollout {rollout_id} has inconsistent prompt/response messages")
+        raise ValueError(
+            f"Rollout {rollout_id} has inconsistent prompt/response messages"
+        )
 
 
 def screening_template(row: dict[str, Any], *, batch_seed: int) -> dict[str, Any]:
@@ -98,7 +99,9 @@ def screening_template(row: dict[str, Any], *, batch_seed: int) -> dict[str, Any
         "independent_rating": True,
         "rating": {criterion: None for criterion in REQUIRED_CRITERIA},
         "notes": "",
-        "batch_order_key": content_hash({"seed": batch_seed, "screening_id": screening_id}),
+        "batch_order_key": content_hash(
+            {"seed": batch_seed, "screening_id": screening_id}
+        ),
     }
 
 
@@ -125,21 +128,42 @@ def _validate_rating(
     expected_hash = screened_text_sha256(rollout_map[rollout_id])
     if rating.get("screened_text_sha256") != expected_hash:
         raise ValueError(f"Rating text hash mismatch for {rollout_id}")
+    expected_screening_id = content_hash(
+        {
+            "rollout_id": rollout_id,
+            "screened_text_sha256": expected_hash,
+        }
+    )[:24]
+    if rating.get("screening_id") != expected_screening_id:
+        raise ValueError(f"Rating screening_id mismatch for {rollout_id}")
     if rating.get("prompt_messages") != rollout_map[rollout_id].get(
         "prompt_messages"
     ) or rating.get("response_text") != rollout_map[rollout_id].get("response_text"):
-        raise ValueError(f"Rating displays different text than the rollout for {rollout_id}")
+        raise ValueError(
+            f"Rating displays different text than the rollout for {rollout_id}"
+        )
     criteria = rating.get("rating")
     if not isinstance(criteria, dict):
         raise ValueError(f"Rating for {rollout_id} requires a rating object")
-    missing = [criterion for criterion in REQUIRED_CRITERIA if not isinstance(criteria.get(criterion), bool)]
+    missing = [
+        criterion
+        for criterion in REQUIRED_CRITERIA
+        if not isinstance(criteria.get(criterion), bool)
+    ]
     if missing:
         raise ValueError(f"Rating for {rollout_id} lacks boolean criteria {missing}")
-    if any(criteria[criterion] is False for criterion in REQUIRED_CRITERIA) and not str(
-        rating.get("notes", "")
-    ).strip():
-        raise ValueError(f"Rating for {rollout_id} requires notes when any criterion fails")
-    return rollout_id, annotator_id, {key: bool(criteria[key]) for key in REQUIRED_CRITERIA}
+    if (
+        any(criteria[criterion] is False for criterion in REQUIRED_CRITERIA)
+        and not str(rating.get("notes", "")).strip()
+    ):
+        raise ValueError(
+            f"Rating for {rollout_id} requires notes when any criterion fails"
+        )
+    return (
+        rollout_id,
+        annotator_id,
+        {key: bool(criteria[key]) for key in REQUIRED_CRITERIA},
+    )
 
 
 def _agreement_report(by_rollout: dict[str, list[dict[str, bool]]]) -> dict[str, Any]:
@@ -162,9 +186,7 @@ def _agreement_report(by_rollout: dict[str, list[dict[str, bool]]]) -> dict[str,
                 criterion_totals[criterion] += 1
                 if ratings[left_index][criterion] == ratings[right_index][criterion]:
                     criterion_agreements[criterion] += 1
-    pairwise = (
-        eligibility_agreements / pair_total if pair_total else None
-    )
+    pairwise = eligibility_agreements / pair_total if pair_total else None
     if all_eligibility and pair_total:
         prevalence = sum(all_eligibility) / len(all_eligibility)
         expected_disagreement = 2.0 * prevalence * (1.0 - prevalence)

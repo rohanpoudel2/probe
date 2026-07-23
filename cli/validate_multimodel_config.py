@@ -165,6 +165,101 @@ def _validate_judge_lock(cfg: dict, *, required: bool) -> dict | None:
     return model
 
 
+def _validate_benign_audit_protocol(cfg: dict, *, required: bool) -> None:
+    protocol = cfg.get("benign_screening_audit")
+    if protocol is None and not required:
+        return
+    if not isinstance(protocol, dict):
+        raise ValueError("benign_screening_audit must be a mapping")
+    if protocol.get("protocol") != "benign-screening-audit-v1":
+        raise ValueError("benign_screening_audit must freeze benign-screening-audit-v1")
+    if protocol.get("scope") != "per_monitored_model_revision":
+        raise ValueError(
+            "Benign screening must be audited per monitored model revision"
+        )
+    if int(protocol.get("min_screeners", 0)) < 3:
+        raise ValueError("Benign screening requires at least three screeners")
+    if int(protocol.get("random_audit_size", 0)) < 300:
+        raise ValueError(
+            "Benign screening requires at least 300 random audited acceptances"
+        )
+    if int(protocol.get("risk_audit_size", -1)) < 0:
+        raise ValueError("benign_screening_audit.risk_audit_size cannot be negative")
+    if not np.isclose(float(protocol.get("confidence_level", 0.0)), 0.95):
+        raise ValueError("Benign screening must use a frozen 95% confidence level")
+    maximum_rate = float(protocol.get("max_false_acceptance_rate", 1.0))
+    if not 0.0 < maximum_rate <= 0.01:
+        raise ValueError("Benign screening false-acceptance bound cannot exceed 1%")
+    if not isinstance(protocol.get("selection_seed"), int):
+        raise ValueError("Benign screening requires an integer selection_seed")
+
+    lock_value = protocol.get("screener_model_lock")
+    if not lock_value:
+        raise ValueError("Benign screening requires a screener_model_lock")
+    lock_path = Path(lock_value)
+    if not lock_path.exists():
+        raise FileNotFoundError(f"Missing benign screener model lock: {lock_path}")
+    lock = yaml.safe_load(lock_path.read_text(encoding="utf-8")) or {}
+    if lock.get("schema_version") != "llm-judge-model-lock-v1":
+        raise ValueError("Unsupported benign screener model-lock schema")
+    locked_models = lock.get("models") or {}
+    profiles = protocol.get("screener_model_keys_by_monitored_family")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError(
+            "Benign screening requires model keys for every monitored family"
+        )
+    configured_families = {
+        str(model.get("family", "")) for model in cfg.get("models", [])
+    }
+    missing_profiles = configured_families.difference(profiles)
+    if missing_profiles:
+        raise ValueError(
+            "Benign screening lacks screener profiles for monitored families "
+            f"{sorted(missing_profiles)}"
+        )
+    for monitored_family in configured_families:
+        keys = profiles[monitored_family]
+        if (
+            not isinstance(keys, list)
+            or len(keys) < int(protocol["min_screeners"])
+            or len(set(keys)) != len(keys)
+        ):
+            raise ValueError(
+                f"Benign screener profile {monitored_family!r} lacks distinct keys"
+            )
+        specs: list[dict] = []
+        for key in keys:
+            if key not in locked_models:
+                raise ValueError(f"Unknown benign screener model key {key!r}")
+            spec = locked_models[key]
+            for revision_key in ("model_revision", "tokenizer_revision"):
+                if not re.fullmatch(r"[0-9a-f]{40}", str(spec.get(revision_key, ""))):
+                    raise ValueError(
+                        f"Benign screener {key!r} has an unpinned {revision_key}"
+                    )
+            threshold = spec.get("eligible_max_probability")
+            if (
+                isinstance(threshold, bool)
+                or not isinstance(threshold, (int, float))
+                or not 0.0 <= float(threshold) <= 0.10
+            ):
+                raise ValueError(
+                    f"Benign screener {key!r} has a non-conservative threshold"
+                )
+            if spec.get("protocol_role") != "frozen_primary":
+                raise ValueError(f"Benign screener {key!r} must be frozen_primary")
+            specs.append(spec)
+        screener_families = {str(spec.get("family", "")).casefold() for spec in specs}
+        if len(screener_families) != len(specs):
+            raise ValueError(
+                f"Benign screeners for {monitored_family!r} must use distinct families"
+            )
+        if monitored_family.casefold() in screener_families:
+            raise ValueError(
+                f"Benign screeners for {monitored_family!r} include the monitored family"
+            )
+
+
 def _validate_labeled_confidence_data(
     path: Path,
     *,
@@ -344,9 +439,7 @@ def _validate_feature_directory(
                         f"Feature bundle {bundle_path} uses revision {observed_revision}, "
                         f"expected {model_cfg['model_revision']}"
                     )
-                feature_schema_version = str(
-                    bundle["feature_schema_version"].item()
-                )
+                feature_schema_version = str(bundle["feature_schema_version"].item())
                 if feature_schema_version not in {"2", "3"}:
                     raise ValueError(
                         f"Feature bundle {bundle_path} uses unsupported schema "
@@ -461,9 +554,7 @@ def _validate_feature_directory(
                     )
                 example_ids = np.asarray(bundle["example_ids"]).astype(str)
                 question_ids = np.asarray(bundle["question_ids"]).astype(str)
-                if not (
-                    len(labels) == len(example_ids) == len(question_ids)
-                ):
+                if not (len(labels) == len(example_ids) == len(question_ids)):
                     raise ValueError(
                         f"Feature bundle {bundle_path} has misaligned labels, "
                         "example IDs, or question IDs"
@@ -1020,6 +1111,9 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                     falsification_bundle=None,
                 )
 
+    if not final_protocol:
+        _validate_benign_audit_protocol(cfg, required=False)
+
     if final_protocol:
         if cfg["protocol_stage"] != "frozen":
             raise ValueError("Final execution requires protocol_stage=frozen")
@@ -1035,9 +1129,7 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
             cfg.get("k_values", ""), field="k_values"
         )
         if final_k_values != FINAL_K_VALUES:
-            raise ValueError(
-                "Final execution requires k_values=1,2,4,8,16,32"
-            )
+            raise ValueError("Final execution requires k_values=1,2,4,8,16,32")
         if cfg.get("balance_modes") != "balanced":
             raise ValueError(
                 "Final primary protocol must use matched balanced sampling only"
@@ -1047,6 +1139,7 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
             raise ValueError(
                 "Final execution requires at least three genuinely different model families"
             )
+        _validate_benign_audit_protocol(cfg, required=True)
         _validate_embedding_lock(cfg, required=True)
         judge_model = _validate_judge_lock(cfg, required=True)
         if judge_model is None or judge_model.get("protocol_role") != "frozen_primary":
@@ -1202,7 +1295,10 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                             f"Primary {system_key} lacks exact identity fields "
                             f"{missing_identity}"
                         )
-                if comparison["split"] != "target_test" or comparison["metric"] != "tpr":
+                if (
+                    comparison["split"] != "target_test"
+                    or comparison["metric"] != "tpr"
+                ):
                     raise ValueError(
                         "Primary white-box gain must compare target_test TPR"
                     )

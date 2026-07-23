@@ -2,7 +2,6 @@ import pytest
 import numpy as np
 from pathlib import Path
 
-from cli.common import load_yaml
 from cli.validate_multimodel_config import (
     _validate_feature_directory,
     validate_config,
@@ -66,6 +65,34 @@ def test_pilot_validates_the_registered_embedding_lock() -> None:
         "transcript_text",
     ]
     validate_config(config, check_paths=False, final_protocol=False)
+
+
+def test_pilot_validates_the_registered_benign_audit_protocol() -> None:
+    config = _config()
+    config["models"][0]["family"] = "Qwen3"
+    config["benign_screening_audit"] = {
+        "protocol": "benign-screening-audit-v1",
+        "scope": "per_monitored_model_revision",
+        "screener_model_lock": "experiments/baselines/benign_screening_models.yaml",
+        "screener_model_keys_by_monitored_family": {
+            "Qwen3": [
+                "phi4_mini_benign",
+                "olmo2_1b_benign",
+                "mistral_7b_benign",
+            ]
+        },
+        "min_screeners": 3,
+        "random_audit_size": 300,
+        "risk_audit_size": 0,
+        "selection_seed": 9173,
+        "confidence_level": 0.95,
+        "max_false_acceptance_rate": 0.01,
+    }
+    validate_config(config, check_paths=False, final_protocol=False)
+
+    config["benign_screening_audit"]["random_audit_size"] = 299
+    with pytest.raises(ValueError, match="at least 300"):
+        validate_config(config, check_paths=False, final_protocol=False)
 
 
 def test_black_box_execution_requires_complete_inputs() -> None:
