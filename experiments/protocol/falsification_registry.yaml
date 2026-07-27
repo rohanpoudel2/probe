@@ -5,31 +5,34 @@ axes:
   - behavior
   - domain
   - template
-  - paraphrase
+  - presentation
   - obfuscation
 
 transformed_axes:
-  - paraphrase
+  - presentation
   - obfuscation
 
 shift_protocol:
   require_heldout_test_only: true
   min_independent_groups_per_axis_final: 100
 
-transformation_review:
-  protocol: prompt-semantic-equivalence-v1
-  min_independent_raters: 2
-  required_boolean_decisions:
-    - semantic_equivalence
-    - target_behavior_preserved
-    - answer_not_leaked
+transformation_validation:
+  protocol: deterministic-invariant-transform-v1
+  require_executable_inverse: true
+  require_verbatim_payload_binding: true
+  require_unchanged_answer_metadata: true
+  allowed_generators:
+    presentation:
+      verbatim_wrapper_v1: wrapper-v1
+    obfuscation:
+      reversible_rot13_v1: rot13-v1
 
 hard_negative_protocol:
   match_type: exact_trigger_prompt
   require_same_scenario: true
   require_same_shift_signature: true
   require_test_split: true
-  min_pairs_pilot: 1
+  min_pairs_selection: 1
   min_independent_groups_final: 100
 
 tasks:
@@ -48,12 +51,12 @@ tasks:
       template:
         source: [answer]
         heldout: [are_you_sure, feedback]
-      paraphrase:
-        source: [original]
-        heldout: [reviewed_paraphrase_v1]
+      presentation:
+        source: [plain]
+        heldout: [verbatim_wrapper_v1]
       obfuscation:
         source: [none]
-        heldout: [reviewed_obfuscation_v1]
+        heldout: [reversible_rot13_v1]
 
   motivated_reasoning:
     hard_negative:
@@ -70,12 +73,12 @@ tasks:
       template:
         source: [motivated_mcq_bias_v1]
         heldout: []
-      paraphrase:
-        source: [original]
-        heldout: [reviewed_paraphrase_v1]
+      presentation:
+        source: [plain]
+        heldout: [verbatim_wrapper_v1]
       obfuscation:
         source: [none]
-        heldout: [reviewed_obfuscation_v1]
+        heldout: [reversible_rot13_v1]
 
   cot_distortion:
     hard_negative:
@@ -95,12 +98,12 @@ tasks:
       template:
         source: [official_monitorbench]
         heldout: []
-      paraphrase:
-        source: [original]
-        heldout: [reviewed_paraphrase_v1]
+      presentation:
+        source: [plain]
+        heldout: [verbatim_wrapper_v1]
       obfuscation:
         source: [none]
-        heldout: [reviewed_obfuscation_v1]
+        heldout: [reversible_rot13_v1]
 
   honesty_control:
     hard_negative:
@@ -118,12 +121,12 @@ tasks:
       template:
         source: [neutral_vs_pressure_prompt_pairing_v1]
         heldout: []
-      paraphrase:
-        source: [original]
-        heldout: [reviewed_paraphrase_v1]
+      presentation:
+        source: [plain]
+        heldout: [verbatim_wrapper_v1]
       obfuscation:
         source: [none]
-        heldout: [reviewed_obfuscation_v1]
+        heldout: [reversible_rot13_v1]
 
 behavior_transfer:
   source_values: [sycophancy]
@@ -133,5 +136,5 @@ required_final_heldout_axes:
   - behavior
   - domain
   - template
-  - paraphrase
+  - presentation
   - obfuscation

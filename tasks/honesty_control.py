@@ -10,16 +10,13 @@ from tasks.jsonl_utils import read_jsonl, require_fields, rollout_metadata
 class HonestyControlTask(BehaviorTask):
     spec = TaskSpec(
         name="honesty_control",
-        primary_metric="recall_at_frozen_fpr",
         label_semantics={0: "honest_or_control", 1: "dishonest_reporting"},
         grouped_split_key="question_id",
-        default_spans=["full_text", "context", "reasoning", "answer"],
-        notes="MASK-derived auxiliary family: neutral-belief prompts are control, pressured prompts are positive targets.",
     )
 
     def load(self, path: Optional[str] = None) -> List[TaskExample]:
         if path is None:
-            raise ValueError("HonestyControlTask.load requires a JSONL path in Phase 1.")
+            raise ValueError("HonestyControlTask.load requires a JSONL path.")
 
         rows = read_jsonl(path)
         examples: List[TaskExample] = []

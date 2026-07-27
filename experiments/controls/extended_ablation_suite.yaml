@@ -1,13 +1,16 @@
 base:
-  results_dir: phase6_appendix_ablations
+  execution_mode: confirmatory
+  results_dir: results/extended_ablations
   overwrite: false
   bootstrap_samples: 200
-  views: full_text,pressure_context,answer,reasoning
+  views: answer,full_text
   layers: all
   probes: P1_logistic,P2_mass_mean,P3_lda,P4_cosine,P7_mahalanobis
   k_values: 1,2,4,8
   seeds: 5
   balance_modes: balanced,imbalanced
+  max_reference_alert_rate: 0.01
+  min_reference_groups: 10000
   calibration_pairs:
     - source_task: sycophancy
       target_task: sycophancy
@@ -22,6 +25,7 @@ base:
         sycophancy: outputs/final_features/Qwen3-4B/sycophancy_main
         motivated_reasoning: outputs/final_features/Qwen3-4B/motivated_reasoning_main
         cot_distortion: outputs/final_features/Qwen3-4B/cot_distortion_main
+      reference_feature_dir: outputs/final_features/Qwen3-4B/reference_traffic
 
 ablations:
   - name: answer_only
@@ -30,9 +34,6 @@ ablations:
   - name: full_text_only
     overrides:
       views: full_text
-  - name: no_reasoning
-    overrides:
-      views: full_text,pressure_context,answer
   - name: linear_only
     overrides:
       probes: P1_logistic,P3_lda

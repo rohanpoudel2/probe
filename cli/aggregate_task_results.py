@@ -28,25 +28,27 @@ GROUP_COLS = [
 METRIC_COLS = [
     "eval_auroc",
     "eval_auprc",
-    "eval_recall_at_1pct_fpr",
-    "eval_recall_at_frozen_fpr",
+    "eval_tpr_at_1pct_reference_alert_budget",
+    "eval_tpr_at_reference_alert_budget",
     "eval_fpr_at_frozen_threshold",
     "eval_brier",
     "eval_ece",
     "test_auroc",
     "test_auprc",
-    "test_recall_at_1pct_fpr",
-    "test_recall_at_frozen_fpr",
+    "test_tpr_at_1pct_reference_alert_budget",
+    "test_tpr_at_reference_alert_budget",
     "test_fpr_at_frozen_threshold",
     "test_brier",
     "test_ece",
     "transfer_auroc",
     "transfer_auprc",
-    "transfer_recall_at_1pct_fpr",
-    "transfer_recall_at_frozen_fpr",
+    "transfer_tpr_at_1pct_reference_alert_budget",
+    "transfer_tpr_at_reference_alert_budget",
     "transfer_fpr_at_frozen_threshold",
     "transfer_brier",
     "transfer_ece",
+    "reference_calibration_alert_rate",
+    "reference_holdout_alert_rate",
     "wall_clock_s",
 ]
 
@@ -56,7 +58,10 @@ def main() -> None:
         description="Aggregate structured task-benchmark results"
     )
     parser.add_argument("--results_dir", required=True)
-    parser.add_argument("--selection_metric", default="eval_recall_at_1pct_fpr_mean")
+    parser.add_argument(
+        "--selection_metric",
+        default="eval_tpr_at_1pct_reference_alert_budget_mean",
+    )
     parser.add_argument("--bootstrap_samples", type=int, default=2000)
     args = parser.parse_args()
 

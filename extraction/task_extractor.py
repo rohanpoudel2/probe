@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -56,7 +55,7 @@ class TaskActivationExtractor:
         if cfg.missing_view_policy not in {"error", "drop"}:
             raise ValueError("missing_view_policy must be 'error' or 'drop'")
         from transformers import AutoModel, AutoTokenizer
-        from cli.common import resolve_torch_device
+        from cli.common import inference_dtype_for_device, resolve_torch_device
 
         tokenizer_revision = cfg.tokenizer_revision or cfg.model_revision
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -69,10 +68,9 @@ class TaskActivationExtractor:
         self.resolved_device = resolved_device
         model_kwargs = {
             "revision": cfg.model_revision,
-            "torch_dtype": "auto",
+            "torch_dtype": inference_dtype_for_device(resolved_device),
+            "low_cpu_mem_usage": True,
         }
-        if resolved_device == "auto":
-            model_kwargs["device_map"] = "auto"
         # Only the transformer-block hidden states are needed; loading the base
         # model (no language-modeling head) yields identical ``hidden_states``
         # while skipping the full-vocabulary output projection on every forward.
@@ -80,9 +78,9 @@ class TaskActivationExtractor:
             cfg.model_name,
             **model_kwargs,
         )
-        if resolved_device != "auto":
-            self.model = self.model.to(resolved_device)
+        self.model = self.model.to(resolved_device)
         self.model.eval()
+        self.model.requires_grad_(False)
         first_parameter = next(self.model.parameters())
         self.model_parameter_device = str(first_parameter.device)
         self.model_parameter_dtype = str(first_parameter.dtype)
@@ -135,7 +133,6 @@ class TaskActivationExtractor:
         if (
             self.cfg.require_model_generated
             and example.metadata.get("eligible_for_main_study") is False
-            and os.environ.get("PROBE_ALLOW_PILOT_BENIGN") != "1"
         ):
             raise ValueError(
                 f"Example {example.example_id} is explicitly ineligible for the main study"
@@ -367,10 +364,6 @@ class TaskActivationExtractor:
             },
         }
         return result, metadata
-
-    def extract_example(self, example: TaskExample) -> Dict[int, Dict[str, np.ndarray]]:
-        result, _ = self.extract_example_with_metadata(example)
-        return result
 
     def extract_split(self, examples: Iterable[TaskExample], split_name: str) -> None:
         outdir = Path(self.cfg.output_dir)

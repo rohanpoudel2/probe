@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -34,6 +38,36 @@ def _cfg_device(cfg: dict, key: str, fallback: str = "auto") -> str:
     return str(cfg.get(key, fallback))
 
 
+def _archive_execution_manifest(config_path: Path, results_dir: Path) -> None:
+    archive_dir = results_dir / "protocol_artifacts"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archived_path = archive_dir / "execution_manifest.yaml"
+    manifest_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    if archived_path.exists():
+        archived_sha256 = hashlib.sha256(archived_path.read_bytes()).hexdigest()
+        if archived_sha256 != manifest_sha256:
+            raise ValueError(
+                "Refusing to reuse a results directory with a different execution manifest"
+            )
+    elif config_path.resolve() != archived_path.resolve():
+        shutil.copy2(config_path, archived_path)
+    index_path = archive_dir / "execution_manifest.json"
+    index = {
+        "archived_file": archived_path.name,
+        "sha256": manifest_sha256,
+    }
+    rendered = json.dumps(index, indent=2, sort_keys=True) + "\n"
+    if index_path.exists() and index_path.read_text(encoding="utf-8") != rendered:
+        raise ValueError("Execution-manifest provenance index is inconsistent")
+    if not index_path.exists():
+        temporary = index_path.with_suffix(".json.tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(index_path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run protocol-aware multi-model benchmark from YAML config"
@@ -44,14 +78,29 @@ def main() -> None:
         default=None,
         help="Optional default execution device forwarded to model-backed baselines",
     )
+    parser.add_argument(
+        "--selection-only",
+        action="store_true",
+        help="Run source-only system selection without scoring behavior test splits.",
+    )
+    parser.add_argument(
+        "--results-dir",
+        default=None,
+        help="Override the manifest results directory.",
+    )
     args = parser.parse_args()
 
-    cfg = load_yaml(args.config)
+    config_path = Path(args.config)
+    cfg = load_yaml(config_path)
+    selection_only = bool(
+        args.selection_only or cfg.get("execution_mode") == "selection"
+    )
     judge_device = (
         args.device if args.device is not None else _cfg_device(cfg, "llm_judge_device")
     )
-    results_dir = Path(cfg["results_dir"])
+    results_dir = Path(args.results_dir or cfg["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
+    _archive_execution_manifest(config_path, results_dir)
 
     overwritten_pairs: set[tuple[str, str]] = set()
     overwritten_baselines: set[tuple[str, str, str]] = set()
@@ -60,7 +109,7 @@ def main() -> None:
     for model_cfg in cfg["models"]:
         model_name = model_cfg["name"]
         feature_dirs = model_cfg["feature_dirs"]
-        calibration_dirs = model_cfg.get("calibration_dirs", {})
+        reference_feature_dir = model_cfg["reference_feature_dir"]
         for pair in _iter_pairs(cfg):
             source_task = pair["source_task"]
             target_task = pair["target_task"]
@@ -72,8 +121,8 @@ def main() -> None:
                 feature_dirs[source_task],
                 "--source_task",
                 source_task,
-                "--calibration_dir",
-                calibration_dirs.get(source_task, feature_dirs[source_task]),
+                "--reference_dir",
+                reference_feature_dir,
                 "--target_dir",
                 feature_dirs[target_task],
                 "--target_task",
@@ -96,21 +145,23 @@ def main() -> None:
                 str(cfg.get("seeds", 5)),
                 "--balance_modes",
                 cfg.get("balance_modes", "balanced,imbalanced"),
-                "--max_fpr",
-                str(cfg.get("max_fpr", 0.01)),
-                "--min_calibration_negatives",
-                str(cfg.get("min_calibration_negatives", 1000)),
+                "--max_reference_alert_rate",
+                str(cfg.get("max_reference_alert_rate", 0.01)),
+                "--min_reference_groups",
+                str(cfg.get("min_reference_groups", 1000)),
             ]
             pair_key = (source_task, target_task)
             if cfg.get("overwrite", False) and pair_key not in overwritten_pairs:
                 cmd.append("--overwrite")
                 overwritten_pairs.add(pair_key)
+            if selection_only:
+                cmd.append("--selection_only")
             run_cmd(cmd)
 
             if not run_black_box:
                 continue
             labeled_data = model_cfg["labeled_data"]
-            benign_data = model_cfg["benign_labeled_data"]
+            reference_data = model_cfg["reference_data"]
             text_views = _csv(cfg["text_embedding_views"])
             if "B1_text_tfidf" in registered_baselines:
                 baseline_key = ("B1_text_tfidf", source_task, target_task)
@@ -126,10 +177,10 @@ def main() -> None:
                     target_task,
                     "--target_data",
                     labeled_data[target_task],
-                    "--calibration_task",
-                    "benign_calibration",
-                    "--calibration_data",
-                    benign_data,
+                    "--reference_task",
+                    "reference_traffic",
+                    "--reference_data",
+                    reference_data,
                     "--model",
                     model_name,
                     "--results_dir",
@@ -140,10 +191,10 @@ def main() -> None:
                     _csv(cfg.get("k_values", "1,2,4,8")),
                     "--seeds",
                     str(cfg.get("seeds", 5)),
-                    "--max_fpr",
-                    str(cfg.get("max_fpr", 0.01)),
-                    "--min_calibration_negatives",
-                    str(cfg.get("min_calibration_negatives", 1000)),
+                    "--max_reference_alert_rate",
+                    str(cfg.get("max_reference_alert_rate", 0.01)),
+                    "--min_reference_groups",
+                    str(cfg.get("min_reference_groups", 1000)),
                 ]
                 if (
                     cfg.get("overwrite", False)
@@ -151,6 +202,8 @@ def main() -> None:
                 ):
                     text_cmd.append("--overwrite")
                     overwritten_baselines.add(baseline_key)
+                if selection_only:
+                    text_cmd.append("--selection_only")
                 run_cmd(text_cmd)
             if "B2_text_embedding_logistic" in registered_baselines:
                 baseline_key = ("B2_text_embedding_logistic", source_task, target_task)
@@ -167,10 +220,10 @@ def main() -> None:
                     target_task,
                     "--target_cache_dir",
                     embedding_dirs[target_task],
-                    "--calibration_task",
-                    "benign_calibration",
-                    "--calibration_cache_dir",
-                    model_cfg["benign_embedding_cache_dir"],
+                    "--reference_task",
+                    "reference_traffic",
+                    "--reference_cache_dir",
+                    model_cfg["reference_embedding_cache_dir"],
                     "--model",
                     model_name,
                     "--results_dir",
@@ -181,10 +234,10 @@ def main() -> None:
                     _csv(cfg.get("k_values", "1,2,4,8")),
                     "--seeds",
                     str(cfg.get("seeds", 5)),
-                    "--max_fpr",
-                    str(cfg.get("max_fpr", 0.01)),
-                    "--min_calibration_negatives",
-                    str(cfg.get("min_calibration_negatives", 1000)),
+                    "--max_reference_alert_rate",
+                    str(cfg.get("max_reference_alert_rate", 0.01)),
+                    "--min_reference_groups",
+                    str(cfg.get("min_reference_groups", 1000)),
                 ]
                 if (
                     cfg.get("overwrite", False)
@@ -192,6 +245,8 @@ def main() -> None:
                 ):
                     embedding_cmd.append("--overwrite")
                     overwritten_baselines.add(baseline_key)
+                if selection_only:
+                    embedding_cmd.append("--selection_only")
                 run_cmd(embedding_cmd)
             judge_probes = {
                 "B3_llm_judge_zero_shot",
@@ -211,10 +266,10 @@ def main() -> None:
                     target_task,
                     "--target_data",
                     labeled_data[target_task],
-                    "--calibration_task",
-                    "benign_calibration",
-                    "--calibration_data",
-                    benign_data,
+                    "--reference_task",
+                    "reference_traffic",
+                    "--reference_data",
+                    reference_data,
                     "--judge_config",
                     cfg["llm_judge_model_lock"],
                     "--judge_model_key",
@@ -235,10 +290,10 @@ def main() -> None:
                     _csv(cfg.get("k_values", "1,2,4,8")),
                     "--seeds",
                     str(cfg.get("seeds", 5)),
-                    "--max_fpr",
-                    str(cfg.get("max_fpr", 0.01)),
-                    "--min_calibration_negatives",
-                    str(cfg.get("min_calibration_negatives", 1000)),
+                    "--max_reference_alert_rate",
+                    str(cfg.get("max_reference_alert_rate", 0.01)),
+                    "--min_reference_groups",
+                    str(cfg.get("min_reference_groups", 1000)),
                     "--device",
                     judge_device,
                 ]
@@ -248,6 +303,8 @@ def main() -> None:
                 ):
                     judge_cmd.append("--overwrite")
                     overwritten_baselines.add(baseline_key)
+                if selection_only:
+                    judge_cmd.append("--selection_only")
                 run_cmd(judge_cmd)
             if (
                 "B4_output_confidence_logistic" in registered_baselines
@@ -275,10 +332,10 @@ def main() -> None:
                     target_task,
                     "--target_data",
                     labeled_data[target_task],
-                    "--calibration_task",
-                    "benign_calibration",
-                    "--calibration_data",
-                    benign_data,
+                    "--reference_task",
+                    "reference_traffic",
+                    "--reference_data",
+                    reference_data,
                     "--model",
                     model_name,
                     "--results_dir",
@@ -287,10 +344,10 @@ def main() -> None:
                     _csv(cfg.get("k_values", "1,2,4,8")),
                     "--seeds",
                     str(cfg.get("seeds", 5)),
-                    "--max_fpr",
-                    str(cfg.get("max_fpr", 0.01)),
-                    "--min_calibration_negatives",
-                    str(cfg.get("min_calibration_negatives", 1000)),
+                    "--max_reference_alert_rate",
+                    str(cfg.get("max_reference_alert_rate", 0.01)),
+                    "--min_reference_groups",
+                    str(cfg.get("min_reference_groups", 1000)),
                 ]
                 if (
                     cfg.get("overwrite", False)
@@ -298,6 +355,8 @@ def main() -> None:
                 ):
                     confidence_cmd.append("--overwrite")
                     overwritten_baselines.add(baseline_key)
+                if selection_only:
+                    confidence_cmd.append("--selection_only")
                 run_cmd(confidence_cmd)
             elif "B4_output_confidence_logistic" in registered_baselines:
                 unavailable = [
@@ -323,6 +382,22 @@ def main() -> None:
             str(cfg.get("bootstrap_samples", 500)),
         ]
     )
+    if selection_only:
+        run_cmd(
+            [
+                sys.executable,
+                "-m",
+                "cli.build_frozen_transfer_report",
+                "--results_dir",
+                str(results_dir),
+                "--selection_k",
+                str(cfg.get("selection_k", 8)),
+            ]
+        )
+        print(
+            "selection-only execution complete; behavior test splits were not scored"
+        )
+        return
     if cfg.get("run_falsification_suite", False):
         manifests = sorted(
             {

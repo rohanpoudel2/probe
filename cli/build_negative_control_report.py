@@ -13,6 +13,14 @@ def _mean_metric(results_dir: Path, metric: str) -> float:
     df = pd.read_csv(path)
     if df.empty:
         return float("nan")
+    if "access_regime" in df:
+        df = df[df["access_regime"].astype(str) == "white_box"]
+    elif "probe" in df:
+        df = df[df["probe"].astype(str).str.startswith("P")]
+    if df.empty:
+        raise ValueError(
+            f"{path} contains no source-selected white-box systems"
+        )
     return float(df[metric].mean())
 
 
@@ -20,7 +28,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Compare main results to negative control suites")
     parser.add_argument("--main_results_dir", required=True)
     parser.add_argument("--controls_root", required=True)
-    parser.add_argument("--metric", default="transfer_recall_at_1pct_fpr_mean")
+    parser.add_argument(
+        "--metric", default="transfer_tpr_at_1pct_reference_alert_budget_mean"
+    )
     args = parser.parse_args()
 
     main_results_dir = Path(args.main_results_dir)

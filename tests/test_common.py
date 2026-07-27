@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import torch
 import pytest
 
-from cli.common import resolve_torch_device
+from cli.common import (
+    bounded_batch_size_for_device,
+    inference_dtype_for_device,
+    resolve_torch_device,
+)
 
 
 def _set_torch_state(
@@ -54,3 +58,13 @@ def test_resolve_device_rejects_missing_mps(monkeypatch: pytest.MonkeyPatch) -> 
     _set_torch_state(monkeypatch, cuda_available=False, mps_available=False)
     with pytest.raises(ValueError, match="MPS requested"):
         resolve_torch_device("mps")
+
+
+def test_mps_uses_memory_efficient_supported_inference_dtype() -> None:
+    assert inference_dtype_for_device("mps") is torch.float16
+    assert inference_dtype_for_device("cpu") == "auto"
+
+
+def test_mps_caps_padded_transformer_batches() -> None:
+    assert bounded_batch_size_for_device(16, "mps") == 1
+    assert bounded_batch_size_for_device(16, "cuda") == 16

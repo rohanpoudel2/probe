@@ -35,9 +35,9 @@ def test_llm_judge_runner_uses_resumable_cache_without_transformers(
 ) -> None:
     source_path = tmp_path / "source.jsonl"
     target_path = tmp_path / "target.jsonl"
-    calibration_path = tmp_path / "calibration.jsonl"
+    reference_path = tmp_path / "reference.jsonl"
     judge_lock = tmp_path / "judge.yaml"
-    for path in (source_path, target_path, calibration_path, judge_lock):
+    for path in (source_path, target_path, reference_path, judge_lock):
         path.write_text("fixture\n", encoding="utf-8")
     datasets = {
         str(source_path): [
@@ -52,9 +52,11 @@ def test_llm_judge_runner_uses_resumable_cache_without_transformers(
             _example("target-pos", "target", "test", 1),
             _example("target-neg", "target", "test", 0),
         ],
-        str(calibration_path): [
+        str(reference_path): [
             _example("cal-0", "cal-0", "calibration", 0),
             _example("cal-1", "cal-1", "calibration", 0),
+            _example("holdout-0", "holdout-0", "test", 0),
+            _example("holdout-1", "holdout-1", "test", 0),
         ],
     }
 
@@ -72,6 +74,9 @@ def test_llm_judge_runner_uses_resumable_cache_without_transformers(
             assert spec["model_id"] == "org/judge"
             assert batch_size == 2
             assert isinstance(device, str)
+            self.batch_size = batch_size
+            self.resolved_device = "cpu"
+            self.model_parameter_dtype = "torch.float32"
 
         def score_bundle(self, bundle, demonstrations):
             self.__class__.calls += 1
@@ -108,7 +113,7 @@ def test_llm_judge_runner_uses_resumable_cache_without_transformers(
         {
             "source": FixtureTask,
             "target": FixtureTask,
-            "benign_calibration": FixtureTask,
+            "reference_traffic": FixtureTask,
         },
     )
     monkeypatch.setattr(
@@ -131,10 +136,10 @@ def test_llm_judge_runner_uses_resumable_cache_without_transformers(
             "target",
             "--target_data",
             str(target_path),
-            "--calibration_task",
-            "benign_calibration",
-            "--calibration_data",
-            str(calibration_path),
+            "--reference_task",
+            "reference_traffic",
+            "--reference_data",
+            str(reference_path),
             "--judge_config",
             str(judge_lock),
             "--judge_model_key",
@@ -155,8 +160,10 @@ def test_llm_judge_runner_uses_resumable_cache_without_transformers(
             "1",
             "--seeds",
             "1",
-            "--min_calibration_negatives",
+            "--min_reference_groups",
             "2",
+            "--max_reference_alert_rate",
+            "0.5",
         ],
     )
 
@@ -170,7 +177,10 @@ def test_llm_judge_runner_uses_resumable_cache_without_transformers(
         "B3_llm_judge_zero_shot",
         "B3_llm_judge_few_shot",
     }
-    assert all(row["transfer_recall_at_frozen_fpr"] == 1.0 for row in rows)
+    assert all(
+        row["transfer_tpr_at_reference_alert_budget"] == 1.0 for row in rows
+    )
+    assert all(row["reference_holdout_alert_rate"] == 0.0 for row in rows)
     assert len(list((tmp_path / "cache").glob("*.npz"))) == 2
     calls_after_first_run = FakeJudgeRuntime.calls
 

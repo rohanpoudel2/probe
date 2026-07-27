@@ -16,7 +16,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build no-leakage frozen transfer report from task_summary.csv")
     parser.add_argument("--results_dir", required=True)
     parser.add_argument(
-        "--selection_metric", default="eval_recall_at_frozen_fpr_mean"
+        "--selection_metric", default="eval_tpr_at_reference_alert_budget_mean"
     )
     parser.add_argument("--selection_k", type=int, default=None)
     args = parser.parse_args()

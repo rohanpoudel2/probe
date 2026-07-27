@@ -7,13 +7,20 @@ import pandas as pd
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Split task reports into calibration and transfer protocol tables")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Split the source-selected primary-system report into same-task and "
+            "cross-task protocol tables"
+        )
+    )
     parser.add_argument("--results_dir", required=True)
     args = parser.parse_args()
 
-    report_path = Path(args.results_dir) / "task_frozen_transfer_report.csv"
+    report_path = Path(args.results_dir) / "task_primary_transfer_report.csv"
     if not report_path.exists():
-        raise FileNotFoundError(f"Missing {report_path}. Run build_frozen_transfer_report.py first.")
+        raise FileNotFoundError(
+            f"Missing {report_path}. Run build_frozen_transfer_report.py first."
+        )
 
     report = pd.read_csv(report_path)
     calibration = report[report["source_task"] == report["target_task"]].copy()

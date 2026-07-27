@@ -7,15 +7,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from data.benign_audit import (
-    AUDIT_LABEL_SOURCE,
-    AUDIT_PROTOCOL,
-    validate_accepted_audit_metadata,
-)
-from data.benign_screening import (
-    ANNOTATION_PROTOCOL,
-    LABEL_SOURCE,
-    screened_text_sha256,
+from data.reference_traffic import (
+    REFERENCE_LABEL_SOURCE,
+    REFERENCE_PROTOCOL,
+    validate_reference_annotation_metadata,
 )
 from data.falsification import (
     SHIFT_AXES,
@@ -56,7 +51,7 @@ def _normalized_prompt(messages: list[dict[str, str]]) -> str:
 def audit_rows(
     rows: list[dict[str, Any]],
     *,
-    benign_calibration: bool = False,
+    reference_traffic: bool = False,
     require_confidence_trace: bool = False,
     falsification_bundle: tuple[dict[str, Any], str] | None = None,
     require_falsification: bool = False,
@@ -114,7 +109,7 @@ def audit_rows(
         else:
             group_splits[group_id].add(protocol_split)
 
-        if falsification_bundle is not None and not benign_calibration:
+        if falsification_bundle is not None and not reference_traffic:
             registry, registry_sha256 = falsification_bundle
             task_name = str(row.get("task_family", ""))
             scenario_metadata = row.get("metadata")
@@ -143,7 +138,7 @@ def audit_rows(
                     ] += 1
             except ValueError as err:
                 errors.append(f"{prefix}: invalid falsification metadata: {err}")
-        elif require_falsification and not benign_calibration:
+        elif require_falsification and not reference_traffic:
             errors.append(f"{prefix}: missing required falsification metadata")
 
         label_source = str(row.get("label_source", "")).strip()
@@ -153,49 +148,24 @@ def audit_rows(
                 f"{prefix}: label_source and annotation_protocol are required"
             )
         label_sources[label_source] += 1
-        if benign_calibration:
-            if protocol_split != "calibration":
-                errors.append(
-                    f"{prefix}: benign calibration rows must use calibration split"
-                )
+        if reference_traffic:
+            if protocol_split not in {"calibration", "test"}:
+                errors.append(f"{prefix}: invalid reference traffic partition")
             if label != 0:
-                errors.append(f"{prefix}: benign calibration rows must have label 0")
-            screening = row.get("annotation_metadata")
+                errors.append(
+                    f"{prefix}: reference rows must use membership value 0"
+                )
             if (
-                label_source == AUDIT_LABEL_SOURCE
-                and annotation_protocol == AUDIT_PROTOCOL
+                label_source != REFERENCE_LABEL_SOURCE
+                or annotation_protocol != REFERENCE_PROTOCOL
             ):
-                try:
-                    validate_accepted_audit_metadata(row, screening)
-                except ValueError as err:
-                    errors.append(f"{prefix}: invalid benign audit metadata: {err}")
-            else:
-                if (
-                    label_source != LABEL_SOURCE
-                    or annotation_protocol != ANNOTATION_PROTOCOL
-                ):
-                    errors.append(
-                        f"{prefix}: benign row lacks a frozen screening protocol"
-                    )
-                if not isinstance(screening, dict):
-                    errors.append(f"{prefix}: benign row lacks screening metadata")
-                else:
-                    n_raters = screening.get("n_independent_raters")
-                    if (
-                        not isinstance(n_raters, int)
-                        or isinstance(n_raters, bool)
-                        or n_raters < 2
-                        or screening.get("unanimous_eligible") is not True
-                    ):
-                        errors.append(
-                            f"{prefix}: benign row lacks unanimous two-rater eligibility"
-                        )
-                    if screening.get("screened_text_sha256") != screened_text_sha256(
-                        row
-                    ):
-                        errors.append(
-                            f"{prefix}: benign screening text hash does not match the rollout"
-                        )
+                errors.append(f"{prefix}: invalid reference traffic contract")
+            try:
+                validate_reference_annotation_metadata(
+                    row, row.get("annotation_metadata")
+                )
+            except ValueError as err:
+                errors.append(f"{prefix}: invalid reference metadata: {err}")
 
         revision = str(row.get("model_revision", "")).strip()
         if not PINNED_REVISION_RE.fullmatch(revision):
@@ -267,18 +237,18 @@ def audit_rows(
     unmatched_groups = sorted(
         group for group, labels in group_labels.items() if labels != {0, 1}
     )
-    if benign_calibration:
+    if reference_traffic:
         non_negative_groups = [
             group for group, labels in group_labels.items() if labels != {0}
         ]
         if non_negative_groups:
             errors.append(
-                "Benign calibration mode requires every observed label to be 0"
+                "Reference traffic requires membership value 0 for every row"
             )
         repeated_groups = [group for group, count in group_counts.items() if count != 1]
         if repeated_groups:
             errors.append(
-                "Benign calibration requires exactly one accepted rollout per independent group"
+                "Reference traffic requires exactly one rollout per independent group"
             )
     else:
         if not matched_groups:
@@ -336,7 +306,7 @@ def main() -> None:
     )
     parser.add_argument("--data", required=True)
     parser.add_argument("--output", default=None)
-    parser.add_argument("--benign_calibration", action="store_true")
+    parser.add_argument("--reference_traffic", action="store_true")
     parser.add_argument("--require_confidence_trace", action="store_true")
     parser.add_argument("--falsification_registry", default=None)
     parser.add_argument("--require_falsification", action="store_true")
@@ -349,7 +319,7 @@ def main() -> None:
     )
     report = audit_rows(
         _read_jsonl(Path(args.data)),
-        benign_calibration=args.benign_calibration,
+        reference_traffic=args.reference_traffic,
         require_confidence_trace=args.require_confidence_trace,
         falsification_bundle=falsification_bundle,
         require_falsification=args.require_falsification,

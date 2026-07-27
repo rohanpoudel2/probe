@@ -1,18 +1,20 @@
 protocol_version: frontier-v1
-protocol_stage: pilot
-results_dir: phase5_main_research_results
+protocol_stage: selection
+execution_mode: selection
+results_dir: results/frontier_selection
 overwrite: false
 bootstrap_samples: 1000
 views: answer
 layers: all
-probes: P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis
-k_values: 1,4,8
+probes: P1_logistic,P2_mass_mean,P3_lda,P4_cosine,P7_mahalanobis
+k_values: 1,2,4,8,16,32
+selection_k: 8
 seeds: 10
 balance_modes: balanced
-max_fpr: 0.01
-min_calibration_negatives: 1000
-run_black_box_baselines: false
-run_falsification_suite: false
+max_reference_alert_rate: 0.01
+min_reference_groups: 10000
+run_black_box_baselines: true
+run_falsification_suite: true
 falsification_registry: experiments/protocol/falsification_registry.yaml
 black_box_baselines:
   - B1_text_tfidf
@@ -36,29 +38,23 @@ llm_judge_views:
 llm_judge_modes:
   - zero_shot
   - few_shot
-benign_screening_audit:
-  protocol: benign-screening-audit-v1
+reference_traffic_protocol:
+  protocol: reference-traffic-v1
   scope: per_monitored_model_revision
-  screener_model_lock: experiments/baselines/benign_screening_models.yaml
-  screener_model_keys_by_monitored_family:
-    Qwen3:
-      - phi4_mini_benign
-      - olmo2_1b_benign
-      - granite_2b_benign
-    Llama3.1:
-      - phi4_mini_benign
-      - olmo2_1b_benign
-      - granite_2b_benign
-    Mistral:
-      - phi4_mini_benign
-      - olmo2_1b_benign
-      - granite_2b_benign
-  min_screeners: 3
-  random_audit_size: 300
-  risk_audit_size: 0
+  source_lock: experiments/data/huggingface_source_lock.yaml
+  calibration_method: split_conformal_upper_tail_v1
+  calibration_groups: 10000
+  holdout_groups: 10000
   selection_seed: 9173
-  confidence_level: 0.95
-  max_false_acceptance_rate: 0.01
+  max_reference_alert_rate: 0.01
+  semantic_labels: false
+claim_gates:
+  primary_effect: white_box_minus_selected_black_box_tpr
+  reference_holdout_check: selected_system_interval_not_above_budget_v1
+  hard_negative_check: fpr_noninferiority_and_pairwise_ordering_v1
+  hard_negative_fpr_noninferiority_margin: 0.01
+  pairwise_order_accuracy_floor: 0.5
+  multiplicity_control: holm_global
 
 calibration_pairs:
   - source_task: sycophancy
@@ -79,6 +75,22 @@ models:
       sycophancy: outputs/final_features/Qwen3-4B/sycophancy_main
       motivated_reasoning: outputs/final_features/Qwen3-4B/motivated_reasoning_main
       cot_distortion: outputs/final_features/Qwen3-4B/cot_distortion_main
+    reference_feature_dir: outputs/final_features/Qwen3-4B/reference_traffic
+    reference_data: data/labeled/Qwen3-4B/reference_traffic.jsonl
+    labeled_data:
+      sycophancy: data/labeled/Qwen3-4B/sycophancy.jsonl
+      motivated_reasoning: data/labeled/Qwen3-4B/motivated_reasoning.jsonl
+      cot_distortion: data/labeled/Qwen3-4B/cot_distortion.jsonl
+    text_embedding_cache_dirs:
+      sycophancy: outputs/text_embeddings/Qwen3-4B/sycophancy
+      motivated_reasoning: outputs/text_embeddings/Qwen3-4B/motivated_reasoning
+      cot_distortion: outputs/text_embeddings/Qwen3-4B/cot_distortion
+    reference_embedding_cache_dir: outputs/text_embeddings/Qwen3-4B/reference_traffic
+    llm_judge_cache_dir: outputs/llm_judge_scores/Qwen3-4B
+    falsification_manifests:
+      sycophancy: data/falsification/Qwen3-4B/sycophancy.json
+      motivated_reasoning: data/falsification/Qwen3-4B/motivated_reasoning.json
+      cot_distortion: data/falsification/Qwen3-4B/cot_distortion.json
   - name: Qwen3-8B
     model_id: Qwen/Qwen3-8B
     model_revision: b968826d9c46dd6066d109eabc6255188de91218
@@ -87,6 +99,22 @@ models:
       sycophancy: outputs/final_features/Qwen3-8B/sycophancy_main
       motivated_reasoning: outputs/final_features/Qwen3-8B/motivated_reasoning_main
       cot_distortion: outputs/final_features/Qwen3-8B/cot_distortion_main
+    reference_feature_dir: outputs/final_features/Qwen3-8B/reference_traffic
+    reference_data: data/labeled/Qwen3-8B/reference_traffic.jsonl
+    labeled_data:
+      sycophancy: data/labeled/Qwen3-8B/sycophancy.jsonl
+      motivated_reasoning: data/labeled/Qwen3-8B/motivated_reasoning.jsonl
+      cot_distortion: data/labeled/Qwen3-8B/cot_distortion.jsonl
+    text_embedding_cache_dirs:
+      sycophancy: outputs/text_embeddings/Qwen3-8B/sycophancy
+      motivated_reasoning: outputs/text_embeddings/Qwen3-8B/motivated_reasoning
+      cot_distortion: outputs/text_embeddings/Qwen3-8B/cot_distortion
+    reference_embedding_cache_dir: outputs/text_embeddings/Qwen3-8B/reference_traffic
+    llm_judge_cache_dir: outputs/llm_judge_scores/Qwen3-8B
+    falsification_manifests:
+      sycophancy: data/falsification/Qwen3-8B/sycophancy.json
+      motivated_reasoning: data/falsification/Qwen3-8B/motivated_reasoning.json
+      cot_distortion: data/falsification/Qwen3-8B/cot_distortion.json
   - name: DeepSeek-R1-Distill-Llama-8B
     model_id: deepseek-ai/DeepSeek-R1-Distill-Llama-8B
     model_revision: 6a6f4aa4197940add57724a7707d069478df56b1
@@ -95,6 +123,22 @@ models:
       sycophancy: outputs/final_features/DeepSeek-R1-Distill-Llama-8B/sycophancy_main
       motivated_reasoning: outputs/final_features/DeepSeek-R1-Distill-Llama-8B/motivated_reasoning_main
       cot_distortion: outputs/final_features/DeepSeek-R1-Distill-Llama-8B/cot_distortion_main
+    reference_feature_dir: outputs/final_features/DeepSeek-R1-Distill-Llama-8B/reference_traffic
+    reference_data: data/labeled/DeepSeek-R1-Distill-Llama-8B/reference_traffic.jsonl
+    labeled_data:
+      sycophancy: data/labeled/DeepSeek-R1-Distill-Llama-8B/sycophancy.jsonl
+      motivated_reasoning: data/labeled/DeepSeek-R1-Distill-Llama-8B/motivated_reasoning.jsonl
+      cot_distortion: data/labeled/DeepSeek-R1-Distill-Llama-8B/cot_distortion.jsonl
+    text_embedding_cache_dirs:
+      sycophancy: outputs/text_embeddings/DeepSeek-R1-Distill-Llama-8B/sycophancy
+      motivated_reasoning: outputs/text_embeddings/DeepSeek-R1-Distill-Llama-8B/motivated_reasoning
+      cot_distortion: outputs/text_embeddings/DeepSeek-R1-Distill-Llama-8B/cot_distortion
+    reference_embedding_cache_dir: outputs/text_embeddings/DeepSeek-R1-Distill-Llama-8B/reference_traffic
+    llm_judge_cache_dir: outputs/llm_judge_scores/DeepSeek-R1-Distill-Llama-8B
+    falsification_manifests:
+      sycophancy: data/falsification/DeepSeek-R1-Distill-Llama-8B/sycophancy.json
+      motivated_reasoning: data/falsification/DeepSeek-R1-Distill-Llama-8B/motivated_reasoning.json
+      cot_distortion: data/falsification/DeepSeek-R1-Distill-Llama-8B/cot_distortion.json
   - name: Mistral-7B-Instruct-v0.3
     model_id: mistralai/Mistral-7B-Instruct-v0.3
     model_revision: c170c708c41dac9275d15a8fff4eca08d52bab71
@@ -103,3 +147,19 @@ models:
       sycophancy: outputs/final_features/Mistral-7B-Instruct-v0.3/sycophancy_main
       motivated_reasoning: outputs/final_features/Mistral-7B-Instruct-v0.3/motivated_reasoning_main
       cot_distortion: outputs/final_features/Mistral-7B-Instruct-v0.3/cot_distortion_main
+    reference_feature_dir: outputs/final_features/Mistral-7B-Instruct-v0.3/reference_traffic
+    reference_data: data/labeled/Mistral-7B-Instruct-v0.3/reference_traffic.jsonl
+    labeled_data:
+      sycophancy: data/labeled/Mistral-7B-Instruct-v0.3/sycophancy.jsonl
+      motivated_reasoning: data/labeled/Mistral-7B-Instruct-v0.3/motivated_reasoning.jsonl
+      cot_distortion: data/labeled/Mistral-7B-Instruct-v0.3/cot_distortion.jsonl
+    text_embedding_cache_dirs:
+      sycophancy: outputs/text_embeddings/Mistral-7B-Instruct-v0.3/sycophancy
+      motivated_reasoning: outputs/text_embeddings/Mistral-7B-Instruct-v0.3/motivated_reasoning
+      cot_distortion: outputs/text_embeddings/Mistral-7B-Instruct-v0.3/cot_distortion
+    reference_embedding_cache_dir: outputs/text_embeddings/Mistral-7B-Instruct-v0.3/reference_traffic
+    llm_judge_cache_dir: outputs/llm_judge_scores/Mistral-7B-Instruct-v0.3
+    falsification_manifests:
+      sycophancy: data/falsification/Mistral-7B-Instruct-v0.3/sycophancy.json
+      motivated_reasoning: data/falsification/Mistral-7B-Instruct-v0.3/motivated_reasoning.json
+      cot_distortion: data/falsification/Mistral-7B-Instruct-v0.3/cot_distortion.json

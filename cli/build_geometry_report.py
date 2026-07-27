@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from cli.common import load_yaml
@@ -17,6 +18,22 @@ def _iter_feature_dirs(cfg: dict) -> list[tuple[str, str, str]]:
         for task, feature_dir in model_cfg.get("feature_dirs", {}).items():
             rows.append((model, task, str(feature_dir)))
     return rows
+
+
+def _activation_views(bundle: dict[str, np.ndarray]) -> list[tuple[str, np.ndarray]]:
+    """Return only dense activation matrices, never per-example metadata."""
+
+    n_examples = len(bundle["labels"])
+    views: list[tuple[str, np.ndarray]] = []
+    for name, values in bundle.items():
+        array = np.asarray(values)
+        if (
+            array.ndim == 2
+            and len(array) == n_examples
+            and np.issubdtype(array.dtype, np.number)
+        ):
+            views.append((name, array))
+    return views
 
 
 def main() -> None:
@@ -37,9 +54,13 @@ def main() -> None:
         for layer in layers:
             bundle = load_feature_bundle(feature_dir, args.split, layer)
             y = bundle["labels"]
-            for view, X in bundle.items():
-                if view in {"labels", "example_ids", "question_ids"}:
-                    continue
+            activation_views = _activation_views(bundle)
+            if not activation_views:
+                raise ValueError(
+                    f"No numeric activation views found in "
+                    f"{feature_dir}/{args.split}_layer{layer}.npz"
+                )
+            for view, X in activation_views:
                 metrics = compute_geometry_metrics(X, y)
                 geometry_rows.append(
                     {
@@ -97,7 +118,15 @@ def main() -> None:
         print(f"saved {joined_path}")
 
         corr_rows = []
-        outcome_cols = [c for c in ["transfer_recall_at_1pct_fpr_mean", "transfer_auroc_mean", "test_recall_at_1pct_fpr_mean"] if c in joined.columns]
+        outcome_cols = [
+            c
+            for c in [
+                "transfer_tpr_at_1pct_reference_alert_budget_mean",
+                "transfer_auroc_mean",
+                "test_tpr_at_1pct_reference_alert_budget_mean",
+            ]
+            if c in joined.columns
+        ]
         metric_cols = [
             c for c in joined.columns
             if c.startswith("source_") or c.startswith("target_")

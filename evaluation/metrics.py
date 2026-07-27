@@ -1,9 +1,8 @@
-"""Evaluation metrics for frozen operating-point monitoring."""
+"""Evaluation metrics for reference-calibrated operational monitoring."""
 
 from __future__ import annotations
 
 from math import sqrt
-from typing import Callable
 
 import numpy as np
 from sklearn.metrics import average_precision_score, roc_auc_score, roc_curve
@@ -33,74 +32,141 @@ def compute_auprc(y_true: np.ndarray, scores: np.ndarray) -> float:
     return float(average_precision_score(y, values))
 
 
-def select_threshold_at_fpr(
-    y_calibration: np.ndarray,
-    scores: np.ndarray,
-    max_fpr: float = 0.01,
+def select_threshold_at_alert_rate(
+    reference_scores: np.ndarray,
+    max_alert_rate: float = 0.01,
     *,
-    min_negatives: int = 100,
+    min_reference: int = 100,
 ) -> float:
-    """Select the most permissive threshold meeting an empirical FPR bound.
+    """Fit a conservative split-conformal alert threshold without labels.
 
-    Only negative calibration examples affect the threshold. Ties are handled
-    conservatively and predictions use ``score >= threshold``. This function
-    must never be called on a final evaluation or transfer target.
+    For a future score ``s``, the conformal p-value is
+    ``(1 + count(reference_scores >= s)) / (n + 1)``. Predictions use
+    ``score >= threshold``. Ties at the boundary are excluded, so the
+    resulting decision is conservative.
     """
 
-    y, values = _as_aligned_arrays(y_calibration, scores)
-    if not 0.0 < max_fpr < 1.0:
-        raise ValueError(f"max_fpr must be between 0 and 1, got {max_fpr}")
-    negatives = values[y == 0]
-    if len(negatives) < min_negatives:
+    values = np.asarray(reference_scores, dtype=float)
+    if values.ndim != 1 or not np.all(np.isfinite(values)):
+        raise ValueError("reference_scores must be a finite one-dimensional array")
+    if not 0.0 < max_alert_rate < 1.0:
         raise ValueError(
-            f"Frozen {max_fpr:.3%} FPR calibration requires at least {min_negatives} "
-            f"negative examples; found {len(negatives)}"
+            f"max_alert_rate must be between 0 and 1, got {max_alert_rate}"
+        )
+    if len(values) < min_reference:
+        raise ValueError(
+            f"Frozen {max_alert_rate:.3%} alert calibration requires at least "
+            f"{min_reference} reference examples; found {len(values)}"
         )
 
-    # A threshold immediately above the maximum always yields zero false
-    # positives. Each unique score is then considered from strict to permissive.
-    candidates = np.concatenate(
-        ([np.nextafter(float(negatives.max()), np.inf)], np.unique(negatives)[::-1])
+    # A future point is alertable only when at most ``max_rank`` calibration
+    # scores are greater than or equal to it. Moving one ULP above the boundary
+    # makes tied calibration scores fail closed.
+    max_rank = int(np.floor(max_alert_rate * (len(values) + 1))) - 1
+    if max_rank < 0:
+        # The minimum attainable conformal p-value is 1 / (n + 1), so no
+        # finite future score is alertable at a smaller requested rate.
+        return float("inf")
+    descending = np.sort(values)[::-1]
+    boundary = float(descending[min(max_rank, len(values) - 1)])
+    return float(np.nextafter(boundary, np.inf))
+
+
+def conformal_alert_p_values(
+    reference_scores: np.ndarray, test_scores: np.ndarray
+) -> np.ndarray:
+    """Return conservative upper-tail conformal p-values for arbitrary scores."""
+
+    reference = np.asarray(reference_scores, dtype=float)
+    test = np.asarray(test_scores, dtype=float)
+    if reference.ndim != 1 or test.ndim != 1:
+        raise ValueError("Reference and test scores must be one-dimensional")
+    if len(reference) == 0:
+        raise ValueError("Reference scores cannot be empty")
+    if not np.all(np.isfinite(reference)) or not np.all(np.isfinite(test)):
+        raise ValueError("Conformal scores must be finite")
+    sorted_reference = np.sort(reference)
+    # searchsorted(left) gives count(reference < score); subtracting from n
+    # yields count(reference >= score), including ties conservatively.
+    counts_ge = len(reference) - np.searchsorted(
+        sorted_reference, test, side="left"
     )
-    valid = [
-        float(threshold)
-        for threshold in candidates
-        if float(np.mean(negatives >= threshold)) <= max_fpr
-    ]
-    if not valid:  # Defensive: the nextafter candidate should always be valid.
-        raise RuntimeError("Could not construct a threshold satisfying the requested FPR")
-    return min(valid)
+    return (1.0 + counts_ge.astype(float)) / (len(reference) + 1.0)
 
 
-def require_independent_calibration_negatives(
-    y_calibration: np.ndarray,
+def require_independent_reference_groups(
     group_ids: np.ndarray,
     *,
-    min_negative_groups: int,
+    min_reference_groups: int,
 ) -> int:
-    """Reject tail calibration that inflates sample size with repeated rollouts."""
+    """Require one calibration observation per independent reference group."""
 
-    y = np.asarray(y_calibration)
     groups = np.asarray(group_ids).astype(str)
-    if y.ndim != 1 or groups.ndim != 1 or len(y) != len(groups):
-        raise ValueError("Calibration labels and group_ids must be aligned vectors")
-    if min_negative_groups < 1:
-        raise ValueError("min_negative_groups must be positive")
-    negative_groups = np.unique(groups[y == 0])
-    if np.any(np.char.str_len(negative_groups) == 0):
-        raise ValueError("Calibration group IDs must be non-empty")
-    n_negative_rows = int(np.sum(y == 0))
-    if len(negative_groups) != n_negative_rows:
+    if groups.ndim != 1:
+        raise ValueError("Reference group_ids must be a one-dimensional vector")
+    if min_reference_groups < 1:
+        raise ValueError("min_reference_groups must be positive")
+    unique_groups = np.unique(groups)
+    if np.any(np.char.str_len(unique_groups) == 0):
+        raise ValueError("Reference group IDs must be non-empty")
+    if len(unique_groups) != len(groups):
         raise ValueError(
-            "Frozen threshold calibration requires one negative observation per independent "
-            f"scenario group; found {n_negative_rows} rows from {len(negative_groups)} groups"
+            "Alert calibration requires exactly one observation per independent "
+            f"reference group; found {len(groups)} rows from {len(unique_groups)} groups"
         )
-    if len(negative_groups) < min_negative_groups:
+    if len(unique_groups) < min_reference_groups:
         raise ValueError(
-            f"Frozen threshold calibration requires at least {min_negative_groups} "
-            f"independent negative scenario groups; found {len(negative_groups)}"
+            f"Alert calibration requires at least {min_reference_groups} independent "
+            f"reference groups; found {len(unique_groups)}"
         )
-    return int(len(negative_groups))
+    return int(len(unique_groups))
+
+
+def require_disjoint_reference_groups(
+    calibration_group_ids: np.ndarray,
+    holdout_group_ids: np.ndarray,
+) -> None:
+    """Reject reference partitions that share an underlying scenario group."""
+
+    calibration = np.asarray(calibration_group_ids).astype(str)
+    holdout = np.asarray(holdout_group_ids).astype(str)
+    if calibration.ndim != 1 or holdout.ndim != 1:
+        raise ValueError("Reference group IDs must be one-dimensional vectors")
+    overlap = np.intersect1d(calibration, holdout)
+    if len(overlap):
+        preview = ", ".join(overlap[:5].tolist())
+        raise ValueError(
+            "Reference calibration and holdout partitions must be group-disjoint; "
+            f"found {len(overlap)} overlapping groups (for example: {preview})"
+        )
+
+
+def compute_alert_rate(scores: np.ndarray, threshold: float) -> float:
+    values = np.asarray(scores, dtype=float)
+    if values.ndim != 1 or not np.all(np.isfinite(values)):
+        raise ValueError("scores must be a finite one-dimensional array")
+    if len(values) == 0:
+        return float("nan")
+    return float(np.mean(values >= float(threshold)))
+
+
+def alert_rate_summary(scores: np.ndarray, threshold: float) -> dict[str, float | int]:
+    """Return an alert count, rate, and two-sided 95% Wilson interval."""
+
+    values = np.asarray(scores, dtype=float)
+    if values.ndim != 1 or not np.all(np.isfinite(values)):
+        raise ValueError("scores must be a finite one-dimensional array")
+    if len(values) == 0:
+        raise ValueError("Alert-rate evaluation requires at least one score")
+    alerts = int(np.sum(values >= float(threshold)))
+    low, high = wilson_interval(alerts, len(values))
+    return {
+        "alerts": alerts,
+        "total": int(len(values)),
+        "rate": float(alerts / len(values)),
+        "ci_low": low,
+        "ci_high": high,
+    }
 
 
 def compute_fpr_at_threshold(y_true: np.ndarray, scores: np.ndarray, threshold: float) -> float:
@@ -125,8 +191,8 @@ def compute_recall_at_fpr(
     """Compute an oracle ROC summary using labels from the evaluated split.
 
     This is retained for exploratory plots only. Confirmatory claims and transfer
-    results must use :func:`select_threshold_at_fpr` on a separate calibration
-    split followed by :func:`compute_recall_at_threshold`.
+    results must use :func:`select_threshold_at_alert_rate` on a separate
+    reference partition followed by :func:`compute_recall_at_threshold`.
     """
 
     y, values = _as_aligned_arrays(y_true, scores)
@@ -203,72 +269,3 @@ def compute_fsei(metric_by_k: dict[int, float], k_values: list[int], weighting: 
     weights = 1.0 / np.maximum(ks, 1.0) if weighting == "inverse_k" else np.ones_like(ks)
     weights = weights / weights.sum()
     return float(np.sum(weights * vals))
-
-
-def paired_group_bootstrap_metric_diff(
-    y_true: np.ndarray,
-    scores_a: np.ndarray,
-    scores_b: np.ndarray,
-    group_ids: np.ndarray,
-    metric_fn: Callable[[np.ndarray, np.ndarray], float],
-    n_boot: int = 2000,
-    seed: int = 0,
-) -> dict[str, float]:
-    """Paired cluster bootstrap over independent scenario groups."""
-
-    y, a = _as_aligned_arrays(y_true, scores_a)
-    _, b = _as_aligned_arrays(y_true, scores_b)
-    groups = np.asarray(group_ids).astype(str)
-    if len(groups) != len(y):
-        raise ValueError("group_ids must align with y_true")
-    unique_groups = np.unique(groups)
-    if len(unique_groups) < 2:
-        raise ValueError("Grouped bootstrap requires at least two independent groups")
-
-    # Precompute each group's row indices once. The resampling draws and their
-    # order are unchanged, so results are identical to rescanning ``groups``
-    # every iteration, but the per-iteration cost drops from O(n_boot * G * N)
-    # array scans to a dictionary lookup plus concatenation.
-    group_to_indices = {
-        group: np.flatnonzero(groups == group) for group in unique_groups
-    }
-    observed_diff = float(metric_fn(y, a) - metric_fn(y, b))
-    rng = np.random.default_rng(seed)
-    diffs: list[float] = []
-    for _ in range(n_boot):
-        sampled_groups = rng.choice(unique_groups, size=len(unique_groups), replace=True)
-        sampled_indices = np.concatenate([group_to_indices[group] for group in sampled_groups])
-        sample_y = y[sampled_indices]
-        if len(np.unique(sample_y)) < 2:
-            continue
-        diffs.append(float(metric_fn(sample_y, a[sampled_indices]) - metric_fn(sample_y, b[sampled_indices])))
-
-    if not diffs:
-        return {"mean_diff": observed_diff, "ci_low": float("nan"), "ci_high": float("nan"), "p_value": float("nan")}
-    values = np.asarray(diffs)
-    sign_flip = min(float(np.mean(values <= 0.0)), float(np.mean(values >= 0.0)))
-    return {
-        "mean_diff": observed_diff,
-        "ci_low": float(np.quantile(values, 0.025)),
-        "ci_high": float(np.quantile(values, 0.975)),
-        "p_value": min(1.0, 2.0 * sign_flip),
-    }
-
-
-def paired_bootstrap_metric_diff(
-    y_true: np.ndarray,
-    scores_a: np.ndarray,
-    scores_b: np.ndarray,
-    metric_fn,
-    n_boot: int = 2000,
-    seed: int = 0,
-) -> dict:
-    """Deprecated row bootstrap retained for compatibility.
-
-    New research code should call :func:`paired_group_bootstrap_metric_diff`.
-    """
-
-    row_groups = np.arange(len(y_true)).astype(str)
-    return paired_group_bootstrap_metric_diff(
-        y_true, scores_a, scores_b, row_groups, metric_fn, n_boot=n_boot, seed=seed
-    )

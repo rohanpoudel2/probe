@@ -9,7 +9,14 @@ import pandas as pd
 def main() -> None:
     parser = argparse.ArgumentParser(description="Summarize ablation result directories")
     parser.add_argument("--root_dir", required=True)
-    parser.add_argument("--metric", default="transfer_recall_at_1pct_fpr_mean")
+    parser.add_argument(
+        "--metric", default="transfer_tpr_at_1pct_reference_alert_budget_mean"
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output path; defaults to <root_dir>/ablation_summary.csv.",
+    )
     args = parser.parse_args()
 
     rows = []
@@ -30,7 +37,8 @@ def main() -> None:
             "num_rows": int(len(df)),
         })
     out = pd.DataFrame(rows).sort_values("mean_metric", ascending=False)
-    out_path = root / "ablation_summary.csv"
+    out_path = Path(args.output) if args.output else root / "ablation_summary.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(out_path, index=False)
     print(f"saved {out_path}")
 

@@ -100,13 +100,13 @@ comparisons:
       view: transcript_text
     metric: tpr
 
-  - comparison_id: paraphrase_shift_tpr_qwen3_4b_k8
-    description: Activation-monitor TPR minus the registered black-box monitor TPR on independently reviewed paraphrases.
+  - comparison_id: presentation_shift_tpr_qwen3_4b_k8
+    description: Activation-monitor TPR minus the registered black-box monitor TPR under the deterministic wrapper shift.
     task_name: sycophancy
     slice:
       type: shift
-      axis: paraphrase
-      value: reviewed_paraphrase_v1
+      axis: presentation
+      value: verbatim_wrapper_v1
       role: heldout
     common_filters:
       model: Qwen3-4B
@@ -125,12 +125,12 @@ comparisons:
     metric: tpr
 
   - comparison_id: obfuscation_shift_tpr_qwen3_4b_k8
-    description: Activation-monitor TPR minus the registered black-box monitor TPR on independently reviewed obfuscations.
+    description: Activation-monitor TPR minus the registered black-box monitor TPR under reversible ROT13 obfuscation.
     task_name: sycophancy
     slice:
       type: shift
       axis: obfuscation
-      value: reviewed_obfuscation_v1
+      value: reversible_rot13_v1
       role: heldout
     common_filters:
       model: Qwen3-4B
@@ -210,3 +210,66 @@ comparisons:
       layer: -2
       view: transcript_text
     metric: hard_negative_fpr
+
+  - comparison_id: hard_negative_ordering_qwen3_4b_k8
+    description: Activation-monitor minus registered black-box pairwise ordering accuracy on exact sycophancy trigger prompts.
+    task_name: sycophancy
+    slice:
+      type: matched_hard_negative
+    common_filters:
+      model: Qwen3-4B
+      source_task: sycophancy
+      target_task: sycophancy
+      k: 8
+      balance_mode: balanced
+    system_a:
+      probe: P1_logistic
+      layer: 15
+      view: answer
+    system_b:
+      probe: B2_text_embedding_logistic
+      layer: -2
+      view: transcript_text
+    metric: pairwise_order_accuracy
+
+  - comparison_id: motivated_reasoning_hard_negative_ordering_qwen3_4b_k8
+    description: Activation-monitor minus registered black-box pairwise ordering accuracy on exact motivated-reasoning trigger prompts.
+    task_name: motivated_reasoning
+    slice:
+      type: matched_hard_negative
+    common_filters:
+      model: Qwen3-4B
+      source_task: sycophancy
+      target_task: motivated_reasoning
+      k: 8
+      balance_mode: balanced
+    system_a:
+      probe: P1_logistic
+      layer: 15
+      view: answer
+    system_b:
+      probe: B2_text_embedding_logistic
+      layer: -2
+      view: transcript_text
+    metric: pairwise_order_accuracy
+
+  - comparison_id: monitorbench_hard_negative_ordering_qwen3_4b_k8
+    description: Activation-monitor minus registered black-box pairwise ordering accuracy on exact MonitorBench prompts.
+    task_name: cot_distortion
+    slice:
+      type: matched_hard_negative
+    common_filters:
+      model: Qwen3-4B
+      source_task: sycophancy
+      target_task: cot_distortion
+      k: 8
+      balance_mode: balanced
+    system_a:
+      probe: P1_logistic
+      layer: 15
+      view: answer
+    system_b:
+      probe: B2_text_embedding_logistic
+      layer: -2
+      view: transcript_text
+    metric: pairwise_order_accuracy

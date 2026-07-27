@@ -23,14 +23,40 @@ def mean_difference_direction(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     return normalize_direction(pos.mean(axis=0) - neg.mean(axis=0))
 
 
-def _safe_cov(X: np.ndarray) -> np.ndarray:
-    dim = X.shape[1]
-    if len(X) < 2:
-        return np.eye(dim, dtype=float) * 1e-8
-    cov = np.cov(X, rowvar=False)
-    if np.ndim(cov) == 0:
-        cov = np.asarray([[float(cov)]], dtype=float)
-    return np.asarray(cov, dtype=float)
+def _covariance_trace(X: np.ndarray) -> float:
+    """Return trace(cov(X)) without materializing a hidden_dim² matrix."""
+
+    values = np.asarray(X, dtype=float)
+    if len(values) < 2:
+        return float(values.shape[1] * 1e-8)
+    centered = values - values.mean(axis=0, keepdims=True)
+    return float(np.sum(centered * centered) / (len(values) - 1))
+
+
+def _covariance_spectrum_summary(X: np.ndarray) -> tuple[float, float]:
+    """Return condition number and anisotropy from the compact SVD spectrum."""
+
+    values = np.asarray(X, dtype=float)
+    dimension = values.shape[1]
+    if len(values) < 2:
+        return 1.0, 1.0
+    centered = values - values.mean(axis=0, keepdims=True)
+    singular_values = np.linalg.svd(centered, compute_uv=False)
+    eigenvalues = np.square(singular_values) / (len(values) - 1)
+    maximum = float(np.max(eigenvalues)) if len(eigenvalues) else 0.0
+    # The full covariance has hidden_dim eigenvalues. When rank < hidden_dim,
+    # its omitted eigenvalues are exactly zero and receive the same numerical
+    # floor used by the previous dense eigendecomposition.
+    rank_deficient = len(eigenvalues) < dimension or np.any(eigenvalues <= 1e-12)
+    minimum = (
+        1e-12
+        if rank_deficient
+        else max(float(np.min(eigenvalues)), 1e-12)
+    )
+    mean_eigenvalue = float(np.sum(eigenvalues) / dimension)
+    condition = maximum / minimum
+    anisotropy = maximum / max(mean_eigenvalue, 1e-12)
+    return condition, anisotropy
 
 
 def effective_rank(X: np.ndarray) -> float:
@@ -46,13 +72,33 @@ def effective_rank(X: np.ndarray) -> float:
     return float(np.exp(entropy))
 
 
-def nn_purity(X: np.ndarray, y: np.ndarray) -> float:
+def nn_purity(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    block_size: int = 256,
+) -> float:
     if len(X) < 2:
         return float("nan")
-    diffs = X[:, None, :] - X[None, :, :]
-    dists = np.sum(diffs * diffs, axis=-1)
-    np.fill_diagonal(dists, np.inf)
-    nearest = np.argmin(dists, axis=1)
+    values = np.asarray(X, dtype=float)
+    labels = np.asarray(y)
+    if values.ndim != 2 or labels.ndim != 1 or len(values) != len(labels):
+        raise ValueError("Nearest-neighbor purity requires aligned X and y")
+    if block_size < 1:
+        raise ValueError("block_size must be positive")
+    norms = np.sum(values * values, axis=1)
+    nearest = np.empty(len(values), dtype=np.int64)
+    for start in range(0, len(values), block_size):
+        stop = min(start + block_size, len(values))
+        distances = (
+            norms[start:stop, None]
+            + norms[None, :]
+            - 2.0 * (values[start:stop] @ values.T)
+        )
+        np.maximum(distances, 0.0, out=distances)
+        local = np.arange(stop - start)
+        distances[local, np.arange(start, stop)] = np.inf
+        nearest[start:stop] = np.argmin(distances, axis=1)
     return float(np.mean(y[nearest] == y))
 
 
@@ -97,12 +143,8 @@ def compute_geometry_metrics(X: np.ndarray, y: np.ndarray) -> dict[str, float]:
             "direction_stability": float("nan"),
         }
 
-    cov_pos = _safe_cov(pos)
-    cov_neg = _safe_cov(neg)
-    cov_all = _safe_cov(X)
-    eigvals = np.linalg.eigvalsh(cov_all)
-    eigvals = np.clip(eigvals, 1e-12, None)
-    within_trace = float(np.trace(cov_pos) + np.trace(cov_neg))
+    within_trace = _covariance_trace(pos) + _covariance_trace(neg)
+    condition_number, anisotropy = _covariance_spectrum_summary(X)
     centroid_distance = float(np.linalg.norm(pos.mean(axis=0) - neg.mean(axis=0)))
     return {
         "n_examples": int(len(X)),
@@ -110,9 +152,9 @@ def compute_geometry_metrics(X: np.ndarray, y: np.ndarray) -> dict[str, float]:
         "n_negative": int(len(neg)),
         "centroid_distance": centroid_distance,
         "within_class_cov_trace": within_trace,
-        "covariance_condition_number": float(eigvals.max() / eigvals.min()),
+        "covariance_condition_number": condition_number,
         "effective_rank": effective_rank(X),
-        "anisotropy": float(eigvals.max() / eigvals.mean()),
+        "anisotropy": anisotropy,
         "fisher_ratio": float((centroid_distance ** 2) / (within_trace + 1e-12)),
         "nn_purity": nn_purity(X, y),
         "direction_stability": direction_stability(X, y),

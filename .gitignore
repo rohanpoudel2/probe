@@ -31,13 +31,9 @@ data/rollouts/
 data/annotations/
 data/labeled/
 data/audits/
-phase4_real_main_results/
-phase5_main_research_results/
-phase6_honesty_auxiliary_results/
-phase6_negative_controls/
+data/screening/
 *.npy
 tmp/
-tmp_phase*/
 *.generated.yaml
 .vscode/
 wandb/

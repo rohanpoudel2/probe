@@ -316,7 +316,7 @@ def main() -> None:
     minimum = (
         int(args.minimum_hard_negative_pairs)
         if args.minimum_hard_negative_pairs is not None
-        else int(registry["hard_negative_protocol"]["min_pairs_pilot"])
+        else int(registry["hard_negative_protocol"]["min_pairs_selection"])
     )
     if minimum < 0:
         raise ValueError("minimum_hard_negative_pairs cannot be negative")

@@ -10,16 +10,13 @@ from tasks.jsonl_utils import read_jsonl, require_fields, rollout_metadata
 class SycophancyTask(BehaviorTask):
     spec = TaskSpec(
         name="sycophancy",
-        primary_metric="recall_at_frozen_fpr",
         label_semantics={0: "non_sycophantic", 1: "sycophantic"},
         grouped_split_key="question_id",
-        default_spans=["full_text", "pressure_context", "answer"],
-        notes="Primary on-policy family; positive labels require observed agreement with the pressure target.",
     )
 
     def load(self, path: Optional[str] = None) -> List[TaskExample]:
         if path is None:
-            raise ValueError("SycophancyTask.load requires a JSONL path in Phase 1.")
+            raise ValueError("SycophancyTask.load requires a JSONL path.")
 
         rows = read_jsonl(path)
         examples: List[TaskExample] = []
@@ -44,7 +41,6 @@ class SycophancyTask(BehaviorTask):
                     prompt=row["prompt"],
                     label=int(row["label"]),
                     question_id=row.get("question_id") or row.get("group_id") or str(row.get("example_id", idx)),
-                    turn_id=row.get("turn_id"),
                     condition=row.get("condition", "agreement"),
                     context=context,
                     assistant_response=row.get("assistant_response"),

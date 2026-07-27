@@ -1,16 +1,18 @@
 protocol_version: frontier-v1
-protocol_stage: pilot
-results_dir: phase6_honesty_auxiliary_results
+protocol_stage: selection
+execution_mode: selection
+results_dir: results/honesty_auxiliary
 overwrite: false
 bootstrap_samples: 1000
 views: answer,full_text
 layers: all
 probes: P1_logistic,P2_mass_mean,P3_lda,P7_mahalanobis
-k_values: 1,4,8
+k_values: 1,2,4,8,16,32
+selection_k: 8
 seeds: 10
 balance_modes: balanced
-max_fpr: 0.01
-min_calibration_negatives: 1000
+max_reference_alert_rate: 0.01
+min_reference_groups: 1000
 run_black_box_baselines: false
 run_falsification_suite: false
 
@@ -24,4 +26,5 @@ models:
     model_revision: 1cfa9a7208912126459214e8b04321603b3df60c
     family: Qwen3
     feature_dirs:
-      honesty_control: outputs/frontier_features/Qwen3-4B/honesty_control_mask
+      honesty_control: outputs/final_features/Qwen3-4B/honesty_control
+    reference_feature_dir: outputs/final_features/Qwen3-4B/reference_traffic

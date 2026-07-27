@@ -8,7 +8,7 @@ from cli.common import load_yaml, run_cmd
 
 
 def _is_frozen_stage(cfg: dict) -> bool:
-    return str(cfg.get("protocol_stage", "pilot")).strip().lower() == "frozen"
+    return str(cfg.get("protocol_stage", "selection")).strip().lower() == "frozen"
 
 
 def _artifact_inputs(cfg: dict) -> list[tuple[str, Path]]:
@@ -18,31 +18,32 @@ def _artifact_inputs(cfg: dict) -> list[tuple[str, Path]]:
             (f"{model_cfg['name']} feature {task}", Path(path))
             for task, path in (model_cfg.get("feature_dirs", {}) or {}).items()
         )
-        for task, path in (model_cfg.get("calibration_dirs", {}) or {}).items():
-            required.append((f"{model_cfg['name']} dedicated calibration {task}", Path(path)))
+        reference_features = model_cfg.get("reference_feature_dir")
+        if reference_features:
+            required.append(
+                (f"{model_cfg['name']} reference features", Path(reference_features))
+            )
         if cfg.get("run_black_box_baselines", False):
             for task, path in (model_cfg.get("labeled_data", {}) or {}).items():
                 required.append(
                     (f"{model_cfg['name']} labeled data {task}", Path(path))
                 )
-            benign_labeled = model_cfg.get("benign_labeled_data")
-            if benign_labeled:
+            reference_data = model_cfg.get("reference_data")
+            if reference_data:
                 required.append(
-                    (f"{model_cfg['name']} benign labeled data", Path(benign_labeled))
+                    (f"{model_cfg['name']} reference traffic", Path(reference_data))
                 )
             for task, path in (model_cfg.get("text_embedding_cache_dirs", {}) or {}).items():
                 required.append(
                     (f"{model_cfg['name']} embedding cache {task}", Path(path))
                 )
-            benign_cache = model_cfg.get("benign_embedding_cache_dir")
-            if benign_cache:
+            reference_cache = model_cfg.get("reference_embedding_cache_dir")
+            if reference_cache:
                 required.append(
-                    (f"{model_cfg['name']} benign embedding cache", Path(benign_cache))
-                )
-            llm_cache = model_cfg.get("llm_judge_cache_dir")
-            if llm_cache:
-                required.append(
-                    (f"{model_cfg['name']} LLM judge cache", Path(llm_cache))
+                    (
+                        f"{model_cfg['name']} reference embedding cache",
+                        Path(reference_cache),
+                    )
                 )
     for key in ("comparisons_file", "falsification_comparisons_file"):
         value = cfg.get(key)
@@ -63,7 +64,7 @@ def _print_artifact_status(cfg_path: Path, cfg: dict) -> None:
     print(f"Loaded protocol config: {cfg_path}")
     print(
         f"protocol_version={cfg.get('protocol_version','(unset)')} "
-        f"stage={cfg.get('protocol_stage','pilot')}"
+        f"stage={cfg.get('protocol_stage','selection')}"
     )
     model_names = [str(model_cfg.get("name", "unknown")) for model_cfg in cfg.get("models", [])]
     print(f"models={', '.join(model_names) if model_names else '(none)'}")
@@ -98,8 +99,11 @@ def _build_commands(
     include_ablations: bool,
     include_release_steps: bool,
     judge_device: str | None,
+    selection_only: bool = False,
+    results_dir_override: str | None = None,
 ) -> list[tuple[str, list[str]]]:
     cfg = load_yaml(cfg_path)
+    effective_results_dir = str(results_dir_override or cfg["results_dir"])
     commands: list[tuple[str, list[str]]] = []
     validate_cmd = [
         sys.executable,
@@ -122,6 +126,10 @@ def _build_commands(
     ]
     if judge_device:
         protocol_cmd.extend(["--device", judge_device])
+    if selection_only:
+        protocol_cmd.append("--selection-only")
+    if results_dir_override:
+        protocol_cmd.extend(["--results-dir", results_dir_override])
     commands.append(("run_main_protocol", protocol_cmd))
 
     if include_controls:
@@ -140,6 +148,7 @@ def _build_commands(
         ]
         if judge_device:
             cmd.extend(["--device", judge_device])
+        cmd.extend(["--main_results_dir", effective_results_dir])
         commands.append(("run_negative_control_suite", cmd))
 
     if include_ablations:
@@ -156,10 +165,17 @@ def _build_commands(
         ]
         if judge_device:
             cmd.extend(["--device", judge_device])
+        if _is_frozen_stage(cfg):
+            cmd.extend(
+                [
+                    "--summary-output",
+                    str(Path(effective_results_dir) / "ablation_summary.csv"),
+                ]
+            )
         commands.append(("run_ablation_suite", cmd))
 
     if include_release_steps and _is_frozen_stage(cfg):
-        results_dir = str(cfg["results_dir"])
+        results_dir = effective_results_dir
         commands.extend(
             [
                 (
@@ -204,6 +220,8 @@ def _build_commands(
                         "cli.build_final_claim_tables",
                         "--results_dir",
                         results_dir,
+                        "--config",
+                        str(cfg_path),
                     ],
                 ),
                 (
@@ -257,6 +275,16 @@ def main() -> None:
         action="store_true",
         help="Skip --check_paths validation step and proceed directly.",
     )
+    parser.add_argument(
+        "--selection-only",
+        action="store_true",
+        help="Run source-only system selection and skip controls, ablations, and release steps.",
+    )
+    parser.add_argument(
+        "--results-dir",
+        default=None,
+        help="Override the protocol results directory.",
+    )
     args = parser.parse_args()
 
     judge_device = (
@@ -272,6 +300,9 @@ def main() -> None:
     if not cfg_path.exists():
         raise FileNotFoundError(f"Protocol config not found: {cfg_path}")
     cfg = load_yaml(cfg_path)
+    selection_only = bool(
+        args.selection_only or cfg.get("execution_mode") == "selection"
+    )
 
     controls_path = Path(args.controls_config)
     ablation_path = Path(args.ablation_config)
@@ -292,10 +323,12 @@ def main() -> None:
         cfg_path=cfg_path,
         controls_config=controls_path,
         ablation_config=ablation_path,
-        include_controls=not args.no_controls,
-        include_ablations=not args.no_ablations,
-        include_release_steps=args.release_artifacts,
+        include_controls=not args.no_controls and not selection_only,
+        include_ablations=not args.no_ablations and not selection_only,
+        include_release_steps=args.release_artifacts and not selection_only,
         judge_device=judge_device,
+        selection_only=selection_only,
+        results_dir_override=args.results_dir,
     )
     if args.skip_validation:
         commands = [entry for entry in commands if entry[0] != "validate_protocol"]

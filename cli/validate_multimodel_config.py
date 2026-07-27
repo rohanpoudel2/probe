@@ -29,12 +29,30 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{7,64}$")
 REQUIRED_TOP_KEYS = [
     "protocol_version",
     "protocol_stage",
+    "execution_mode",
     "results_dir",
     "models",
-    "max_fpr",
-    "min_calibration_negatives",
+    "views",
+    "layers",
+    "probes",
+    "k_values",
+    "max_reference_alert_rate",
+    "min_reference_groups",
+    "selection_k",
+    "seeds",
+    "balance_modes",
+    "bootstrap_samples",
+    "run_black_box_baselines",
+    "run_falsification_suite",
 ]
-REQUIRED_MODEL_KEYS = ["name", "model_id", "model_revision", "family", "feature_dirs"]
+REQUIRED_MODEL_KEYS = [
+    "name",
+    "model_id",
+    "model_revision",
+    "family",
+    "feature_dirs",
+    "reference_feature_dir",
+]
 REQUIRED_BLACK_BOX_BASELINES = {
     "B1_text_tfidf",
     "B2_text_embedding_logistic",
@@ -160,104 +178,134 @@ def _validate_judge_lock(cfg: dict, *, required: bool) -> dict | None:
         model.get("chat_template_kwargs"), dict
     ):
         raise ValueError("LLM-judge model lock has invalid runtime settings")
-    if model.get("protocol_role") not in {"frozen_primary", "pilot_only"}:
+    if model.get("protocol_role") not in {"frozen_primary", "smoke_test_only"}:
         raise ValueError("LLM-judge model lock has invalid protocol_role")
     return model
 
 
-def _validate_benign_audit_protocol(cfg: dict, *, required: bool) -> None:
-    protocol = cfg.get("benign_screening_audit")
+def _validate_reference_protocol(cfg: dict, *, required: bool) -> None:
+    protocol = cfg.get("reference_traffic_protocol")
     if protocol is None and not required:
         return
     if not isinstance(protocol, dict):
-        raise ValueError("benign_screening_audit must be a mapping")
-    if protocol.get("protocol") != "benign-screening-audit-v1":
-        raise ValueError("benign_screening_audit must freeze benign-screening-audit-v1")
+        raise ValueError("reference_traffic_protocol must be a mapping")
+    if protocol.get("protocol") != "reference-traffic-v1":
+        raise ValueError(
+            "reference_traffic_protocol must freeze reference-traffic-v1"
+        )
     if protocol.get("scope") != "per_monitored_model_revision":
         raise ValueError(
-            "Benign screening must be audited per monitored model revision"
+            "Reference traffic must be generated per monitored model revision"
         )
-    if int(protocol.get("min_screeners", 0)) < 3:
-        raise ValueError("Benign screening requires at least three screeners")
-    if int(protocol.get("random_audit_size", 0)) < 300:
+    if protocol.get("calibration_method") != "split_conformal_upper_tail_v1":
         raise ValueError(
-            "Benign screening requires at least 300 random audited acceptances"
+            "Reference traffic must use split_conformal_upper_tail_v1"
         )
-    if int(protocol.get("risk_audit_size", -1)) < 0:
-        raise ValueError("benign_screening_audit.risk_audit_size cannot be negative")
-    if not np.isclose(float(protocol.get("confidence_level", 0.0)), 0.95):
-        raise ValueError("Benign screening must use a frozen 95% confidence level")
-    maximum_rate = float(protocol.get("max_false_acceptance_rate", 1.0))
+    maximum_rate = float(protocol.get("max_reference_alert_rate", 1.0))
+    if not np.isclose(maximum_rate, float(cfg["max_reference_alert_rate"])):
+        raise ValueError(
+            "Reference protocol and top-level alert rates must be identical"
+        )
     if not 0.0 < maximum_rate <= 0.01:
-        raise ValueError("Benign screening false-acceptance bound cannot exceed 1%")
+        raise ValueError("Reference alert budget cannot exceed 1%")
     if not isinstance(protocol.get("selection_seed"), int):
-        raise ValueError("Benign screening requires an integer selection_seed")
+        raise ValueError("Reference sampling requires an integer selection_seed")
+    calibration_groups = int(protocol.get("calibration_groups", 0))
+    holdout_groups = int(protocol.get("holdout_groups", 0))
+    if calibration_groups < int(cfg["min_reference_groups"]):
+        raise ValueError(
+            "Reference protocol calibration_groups is below min_reference_groups"
+        )
+    if holdout_groups < 1:
+        raise ValueError("Reference protocol requires an untouched holdout")
+    if protocol.get("semantic_labels") is not False:
+        raise ValueError("Reference traffic must explicitly disable semantic labels")
 
-    lock_value = protocol.get("screener_model_lock")
-    if not lock_value:
-        raise ValueError("Benign screening requires a screener_model_lock")
-    lock_path = Path(lock_value)
-    if not lock_path.exists():
-        raise FileNotFoundError(f"Missing benign screener model lock: {lock_path}")
-    lock = yaml.safe_load(lock_path.read_text(encoding="utf-8")) or {}
-    if lock.get("schema_version") != "llm-judge-model-lock-v1":
-        raise ValueError("Unsupported benign screener model-lock schema")
-    locked_models = lock.get("models") or {}
-    profiles = protocol.get("screener_model_keys_by_monitored_family")
-    if not isinstance(profiles, dict) or not profiles:
-        raise ValueError(
-            "Benign screening requires model keys for every monitored family"
-        )
-    configured_families = {
-        str(model.get("family", "")) for model in cfg.get("models", [])
+
+def _validate_claim_gates(cfg: dict, *, required: bool) -> None:
+    gates = cfg.get("claim_gates")
+    if gates is None and not required:
+        return
+    if not isinstance(gates, dict):
+        raise ValueError("claim_gates must be a mapping")
+    expected = {
+        "primary_effect": "white_box_minus_selected_black_box_tpr",
+        "reference_holdout_check": "selected_system_interval_not_above_budget_v1",
+        "hard_negative_check": "fpr_noninferiority_and_pairwise_ordering_v1",
+        "multiplicity_control": "holm_global",
     }
-    missing_profiles = configured_families.difference(profiles)
-    if missing_profiles:
+    for key, value in expected.items():
+        if gates.get(key) != value:
+            raise ValueError(f"claim_gates.{key} must be {value!r}")
+    margin = float(gates.get("hard_negative_fpr_noninferiority_margin", -1.0))
+    if not 0.0 <= margin <= 0.05:
         raise ValueError(
-            "Benign screening lacks screener profiles for monitored families "
-            f"{sorted(missing_profiles)}"
+            "hard_negative_fpr_noninferiority_margin must be in [0, 0.05]"
         )
-    for monitored_family in configured_families:
-        keys = profiles[monitored_family]
-        if (
-            not isinstance(keys, list)
-            or len(keys) < int(protocol["min_screeners"])
-            or len(set(keys)) != len(keys)
-        ):
+    ordering_floor = float(gates.get("pairwise_order_accuracy_floor", -1.0))
+    if not np.isclose(ordering_floor, 0.5):
+        raise ValueError("pairwise_order_accuracy_floor must be 0.5")
+
+
+def _validate_frozen_artifact_provenance(
+    cfg: dict,
+    *,
+    registry_sha256: str,
+    comparisons_path: Path,
+    comparisons_config: dict,
+    falsification_comparisons_path: Path,
+    falsification_comparisons_config: dict,
+) -> None:
+    provenance = cfg.get("selection_provenance")
+    if not isinstance(provenance, dict):
+        raise ValueError("Frozen protocol requires selection_provenance")
+    required_provenance = {
+        "selection_file",
+        "selection_file_sha256",
+        "base_config_sha256",
+        "selection_k",
+        "registry_sha256",
+    }
+    missing = sorted(required_provenance.difference(provenance))
+    if missing:
+        raise ValueError(f"Frozen selection_provenance lacks fields {missing}")
+    for key in (
+        "selection_file_sha256",
+        "base_config_sha256",
+        "registry_sha256",
+    ):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(provenance[key])):
+            raise ValueError(f"Frozen selection_provenance has an invalid {key}")
+    if int(provenance["selection_k"]) != int(cfg["selection_k"]):
+        raise ValueError(
+            "Frozen selection provenance disagrees with the registered selection_k"
+        )
+    if provenance["registry_sha256"] != registry_sha256:
+        raise ValueError(
+            "Frozen selection provenance disagrees with the falsification registry"
+        )
+    for label, artifact in (
+        ("primary comparisons", comparisons_config),
+        ("falsification comparisons", falsification_comparisons_config),
+    ):
+        if artifact.get("selection_provenance") != provenance:
             raise ValueError(
-                f"Benign screener profile {monitored_family!r} lacks distinct keys"
+                f"Frozen {label} selection provenance disagrees with the manifest"
             )
-        specs: list[dict] = []
-        for key in keys:
-            if key not in locked_models:
-                raise ValueError(f"Unknown benign screener model key {key!r}")
-            spec = locked_models[key]
-            for revision_key in ("model_revision", "tokenizer_revision"):
-                if not re.fullmatch(r"[0-9a-f]{40}", str(spec.get(revision_key, ""))):
-                    raise ValueError(
-                        f"Benign screener {key!r} has an unpinned {revision_key}"
-                    )
-            threshold = spec.get("eligible_max_probability")
-            if (
-                isinstance(threshold, bool)
-                or not isinstance(threshold, (int, float))
-                or not 0.0 <= float(threshold) <= 0.10
-            ):
-                raise ValueError(
-                    f"Benign screener {key!r} has a non-conservative threshold"
-                )
-            if spec.get("protocol_role") != "frozen_primary":
-                raise ValueError(f"Benign screener {key!r} must be frozen_primary")
-            specs.append(spec)
-        screener_families = {str(spec.get("family", "")).casefold() for spec in specs}
-        if len(screener_families) != len(specs):
-            raise ValueError(
-                f"Benign screeners for {monitored_family!r} must use distinct families"
-            )
-        if monitored_family.casefold() in screener_families:
-            raise ValueError(
-                f"Benign screeners for {monitored_family!r} include the monitored family"
-            )
+
+    registered_hashes = cfg.get("registered_artifact_sha256")
+    if not isinstance(registered_hashes, dict):
+        raise ValueError("Frozen protocol requires registered_artifact_sha256")
+    expected_hashes = {
+        "comparisons_file": file_sha256(comparisons_path),
+        "falsification_comparisons_file": file_sha256(
+            falsification_comparisons_path
+        ),
+    }
+    if registered_hashes != expected_hashes:
+        raise ValueError(
+            "Frozen registered comparison artifacts do not match their manifest hashes"
+        )
 
 
 def _validate_labeled_confidence_data(
@@ -265,7 +313,7 @@ def _validate_labeled_confidence_data(
     *,
     task_name: str,
     model_cfg: dict,
-    calibration_only: bool,
+    reference_only: bool,
     falsification_bundle: tuple[dict, str] | None,
 ) -> None:
     if not path.exists():
@@ -283,10 +331,17 @@ def _validate_labeled_confidence_data(
     confidence_supported = (
         "B4_output_confidence_logistic" not in task.spec.unavailable_baselines
     )
+    allowed_labels = set(task.spec.label_semantics)
+    observed_labels = {int(example.label) for example in examples}
+    if not observed_labels.issubset(allowed_labels):
+        raise ValueError(
+            f"Labeled data {path} contains labels outside the task contract: "
+            f"{sorted(observed_labels - allowed_labels)}"
+        )
     for example in examples:
         if confidence_supported:
             confidence_feature_vector(example.metadata.get("generation"))
-        if falsification_bundle is not None and not calibration_only:
+        if falsification_bundle is not None and not reference_only:
             registry, registry_sha256 = falsification_bundle
             falsification = validate_falsification_metadata(
                 example.metadata.get("falsification"),
@@ -304,12 +359,12 @@ def _validate_labeled_confidence_data(
     observed_splits = {
         str(example.metadata.get("protocol_split") or "") for example in examples
     }
-    if calibration_only:
-        if observed_splits != {"calibration"} or any(
+    if reference_only:
+        if not {"calibration", "test"}.issubset(observed_splits) or any(
             example.label != 0 for example in examples
         ):
             raise ValueError(
-                f"Benign labeled confidence data {path} must be all-negative calibration"
+                f"Reference data {path} must contain membership-only calibration/test partitions"
             )
     elif task.spec.evaluation_only and observed_splits != {"test"}:
         raise ValueError(
@@ -321,6 +376,23 @@ def _validate_labeled_confidence_data(
         "test",
     }.issubset(observed_splits):
         raise ValueError(f"Labeled confidence data {path} lacks train/eval/test splits")
+    if not reference_only:
+        required_splits = (
+            ("test",)
+            if task.spec.evaluation_only
+            else ("train", "eval", "test")
+        )
+        for split in required_splits:
+            split_labels = {
+                int(example.label)
+                for example in examples
+                if example.metadata.get("protocol_split") == split
+            }
+            if split_labels != {0, 1}:
+                raise ValueError(
+                    f"Labeled confidence data {path} split {split} lacks both "
+                    "objective behavior labels"
+                )
     group_splits: dict[str, set[str]] = {}
     for example in examples:
         group = str(example.question_id or example.example_id)
@@ -336,8 +408,9 @@ def _validate_embedding_cache_directory(
     task_name: str,
     views: list[str],
     model_cfg: dict,
-    min_calibration_negatives: int,
-    calibration_only: bool,
+    min_reference_groups: int,
+    reference_only: bool,
+    expected_dataset_sha256: str | None = None,
 ) -> list[dict]:
     caches: list[dict] = []
     for view in views:
@@ -355,29 +428,44 @@ def _validate_embedding_cache_directory(
             raise ValueError(
                 f"Text embedding cache {cache_path} does not match the monitored model"
             )
+        if (
+            expected_dataset_sha256 is not None
+            and metadata["dataset_sha256"] != expected_dataset_sha256
+        ):
+            raise ValueError(
+                f"Text embedding cache {cache_path} was built from a different "
+                "labeled dataset"
+            )
         if np.any(cache["truncated"]):
             raise ValueError(
                 f"Final text embedding cache {cache_path} contains truncated inputs"
             )
-        if calibration_only:
-            if set(np.unique(cache["protocol_splits"]).tolist()) != {"calibration"}:
-                raise ValueError(f"Benign cache {cache_path} must be calibration-only")
+        if reference_only:
+            observed_splits = set(np.unique(cache["protocol_splits"]).tolist())
+            if not {"calibration", "test"}.issubset(observed_splits):
+                raise ValueError(
+                    f"Reference cache {cache_path} requires calibration/test partitions"
+                )
             if np.any(cache["labels"] != 0):
-                raise ValueError(f"Benign cache {cache_path} must be all-negative")
-            if len(cache["labels"]) < min_calibration_negatives:
                 raise ValueError(
-                    f"Benign cache {cache_path} has fewer than "
-                    f"{min_calibration_negatives} negatives"
+                    f"Reference cache {cache_path} must use membership value 0"
                 )
-            n_negative_groups = len(np.unique(cache["question_ids"]))
-            if n_negative_groups != len(cache["labels"]):
+            calibration_mask = cache["protocol_splits"].astype(str) == "calibration"
+            holdout_mask = cache["protocol_splits"].astype(str) == "test"
+            if int(np.sum(calibration_mask)) < min_reference_groups:
                 raise ValueError(
-                    f"Benign cache {cache_path} repeats calibration groups; one row per group is required"
+                    f"Reference cache {cache_path} has fewer than "
+                    f"{min_reference_groups} calibration rows"
                 )
-            if n_negative_groups < min_calibration_negatives:
+            calibration_groups = np.unique(cache["question_ids"][calibration_mask])
+            holdout_groups = np.unique(cache["question_ids"][holdout_mask])
+            if len(calibration_groups) != int(np.sum(calibration_mask)):
                 raise ValueError(
-                    f"Benign cache {cache_path} has only {n_negative_groups} independent "
-                    f"negative groups; requires {min_calibration_negatives}"
+                    f"Reference cache {cache_path} repeats calibration groups"
+                )
+            if len(holdout_groups) != int(np.sum(holdout_mask)):
+                raise ValueError(
+                    f"Reference cache {cache_path} repeats holdout groups"
                 )
         elif TASK_REGISTRY[task_name]().spec.evaluation_only:
             observed_splits = set(np.unique(cache["protocol_splits"]).tolist())
@@ -401,9 +489,11 @@ def _validate_feature_directory(
     path: Path,
     model_cfg: dict,
     task_name: str,
-    min_calibration_negatives: int,
+    min_reference_groups: int,
     required_splits: tuple[str, ...],
     final_protocol: bool,
+    required_views: tuple[str, ...] = (),
+    expected_dataset_sha256: str | None = None,
 ) -> dict[str, set[str]]:
     if not path.exists():
         raise FileNotFoundError(
@@ -411,6 +501,7 @@ def _validate_feature_directory(
         )
     representative_groups: dict[str, set[str]] = {}
     split_signatures: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    provenance_signatures: set[tuple[str, ...]] = set()
     for split in required_splits:
         files = sorted(path.glob(f"{split}_layer*.npz"))
         if not files:
@@ -422,6 +513,7 @@ def _validate_feature_directory(
                     "example_ids",
                     "question_ids",
                     "model_revision",
+                    "tokenizer_revision",
                     "feature_schema_version",
                     "dataset_sha256",
                     "code_revision",
@@ -438,6 +530,22 @@ def _validate_feature_directory(
                     raise ValueError(
                         f"Feature bundle {bundle_path} uses revision {observed_revision}, "
                         f"expected {model_cfg['model_revision']}"
+                    )
+                if str(bundle["tokenizer_revision"].item()) != model_cfg[
+                    "model_revision"
+                ]:
+                    raise ValueError(
+                        f"Feature bundle {bundle_path} uses a tokenizer revision "
+                        "different from the registered monitored-model revision"
+                    )
+                if (
+                    expected_dataset_sha256 is not None
+                    and str(bundle["dataset_sha256"].item())
+                    != expected_dataset_sha256
+                ):
+                    raise ValueError(
+                        f"Feature bundle {bundle_path} was extracted from a "
+                        "different labeled dataset"
                     )
                 feature_schema_version = str(bundle["feature_schema_version"].item())
                 if feature_schema_version not in {"2", "3"}:
@@ -547,11 +655,44 @@ def _validate_feature_directory(
                     raise ValueError(
                         f"Feature bundle {bundle_path} has invalid code_revision"
                     )
+                provenance_signatures.add(
+                    tuple(
+                        str(bundle[key].item())
+                        for key in (
+                            "dataset_sha256",
+                            "code_revision",
+                            "chat_template_sha256",
+                            "extraction_config_sha256",
+                            "model_revision",
+                            "tokenizer_revision",
+                        )
+                    )
+                )
                 labels = np.asarray(bundle["labels"], dtype=int)
                 if not set(np.unique(labels)).issubset({0, 1}):
                     raise ValueError(
                         f"Feature bundle {bundle_path} contains non-binary labels"
                     )
+                missing_views = sorted(
+                    set(required_views).difference(bundle.files)
+                )
+                if missing_views:
+                    raise ValueError(
+                        f"Feature bundle {bundle_path} lacks requested activation "
+                        f"views {missing_views}"
+                    )
+                for view in required_views:
+                    activations = np.asarray(bundle[view])
+                    if (
+                        activations.ndim != 2
+                        or len(activations) != len(labels)
+                        or not np.issubdtype(activations.dtype, np.number)
+                        or not np.all(np.isfinite(activations))
+                    ):
+                        raise ValueError(
+                            f"Feature bundle {bundle_path} has an invalid requested "
+                            f"activation view {view!r}"
+                        )
                 example_ids = np.asarray(bundle["example_ids"]).astype(str)
                 question_ids = np.asarray(bundle["question_ids"]).astype(str)
                 if not (len(labels) == len(example_ids) == len(question_ids)):
@@ -580,10 +721,10 @@ def _validate_feature_directory(
                     )
                 if (
                     split == "calibration"
-                    and int(np.sum(labels == 0)) < min_calibration_negatives
+                    and int(np.sum(labels == 0)) < min_reference_groups
                 ):
                     raise ValueError(
-                        f"Feature bundle {bundle_path} has fewer than {min_calibration_negatives} calibration negatives"
+                        f"Feature bundle {bundle_path} has fewer than {min_reference_groups} calibration reference rows"
                     )
                 if split == "calibration":
                     n_negative_groups = len(np.unique(question_ids[labels == 0]))
@@ -591,10 +732,10 @@ def _validate_feature_directory(
                         raise ValueError(
                             f"Feature bundle {bundle_path} repeats negative calibration groups"
                         )
-                    if n_negative_groups < min_calibration_negatives:
+                    if n_negative_groups < min_reference_groups:
                         raise ValueError(
                             f"Feature bundle {bundle_path} has only {n_negative_groups} independent "
-                            f"negative calibration groups; requires {min_calibration_negatives}"
+                            f"reference calibration groups; requires {min_reference_groups}"
                         )
     split_names = list(representative_groups)
     for index, split_a in enumerate(split_names):
@@ -606,6 +747,10 @@ def _validate_feature_directory(
                 raise ValueError(
                     f"Feature directory {path} leaks {len(overlap)} groups between {split_a} and {split_b}"
                 )
+    if len(provenance_signatures) != 1:
+        raise ValueError(
+            f"Feature directory {path} mixes incompatible extraction provenance"
+        )
     return representative_groups
 
 
@@ -778,26 +923,41 @@ def _validate_final_falsification_comparison_coverage(
         for row in comparisons
         if row["slice"]["type"] == "shift" and row["slice"]["role"] == "heldout"
     ]
-    covered_axes = {row["slice"]["axis"] for row in heldout_shift_comparisons}
     required_axes = set(registry["required_final_heldout_axes"])
-    if covered_axes != required_axes:
+    covered_model_axes = {
+        (
+            str(row["common_filters"]["model"]),
+            str(row["slice"]["axis"]),
+        )
+        for row in heldout_shift_comparisons
+    }
+    expected_model_axes = {
+        (model, axis) for model in configured_models for axis in required_axes
+    }
+    if covered_model_axes != expected_model_axes:
         raise ValueError(
-            "Final pre-registered falsification comparisons lack held-out axes "
-            f"{sorted(required_axes.difference(covered_axes))}"
+            "Final pre-registered falsification comparisons have incomplete "
+            "model-by-heldout-axis coverage; missing "
+            f"{sorted(expected_model_axes.difference(covered_model_axes))[:10]}"
         )
 
     heldout_behaviors = set(
         registry["behavior_transfer"]["heldout_values"]
     ).intersection(configured_tasks)
-    covered_behavior_tasks = {
-        row["task_name"]
+    covered_model_behavior_tasks = {
+        (str(row["common_filters"]["model"]), str(row["task_name"]))
         for row in heldout_shift_comparisons
         if row["slice"]["axis"] == "behavior"
     }
-    if covered_behavior_tasks != heldout_behaviors:
+    expected_model_behavior_tasks = {
+        (model, task)
+        for model in configured_models
+        for task in heldout_behaviors
+    }
+    if covered_model_behavior_tasks != expected_model_behavior_tasks:
         raise ValueError(
-            "Final pre-registered comparisons lack behavior-transfer tasks "
-            f"{sorted(heldout_behaviors.difference(covered_behavior_tasks))}"
+            "Final pre-registered comparisons have incomplete model-by-behavior "
+            f"coverage; missing {sorted(expected_model_behavior_tasks.difference(covered_model_behavior_tasks))[:10]}"
         )
 
     enabled_hard_tasks = {
@@ -808,25 +968,113 @@ def _validate_final_falsification_comparison_coverage(
     hard_comparisons = [
         row for row in comparisons if row["slice"]["type"] == "matched_hard_negative"
     ]
-    covered_hard_tasks = {row["task_name"] for row in hard_comparisons}
-    if covered_hard_tasks != enabled_hard_tasks:
+    covered_model_hard_tasks = {
+        (str(row["common_filters"]["model"]), str(row["task_name"]))
+        for row in hard_comparisons
+    }
+    expected_model_hard_tasks = {
+        (model, task)
+        for model in configured_models
+        for task in enabled_hard_tasks
+    }
+    if covered_model_hard_tasks != expected_model_hard_tasks:
         raise ValueError(
-            "Final pre-registered comparisons lack enabled hard-negative tasks "
-            f"{sorted(enabled_hard_tasks.difference(covered_hard_tasks))}"
+            "Final pre-registered comparisons have incomplete model-by-hard-negative "
+            f"coverage; missing {sorted(expected_model_hard_tasks.difference(covered_model_hard_tasks))[:10]}"
         )
     if any(
         row["metric"] not in HARD_NEGATIVE_COMPARISON_METRICS
         for row in hard_comparisons
     ):
         raise ValueError("Final hard-negative comparison uses an unregistered metric")
+    required_hard_metrics = {"hard_negative_fpr", "pairwise_order_accuracy"}
+    missing_hard_metrics = {
+        f"{model}:{task_name}": sorted(
+            required_hard_metrics.difference(
+                {
+                    row["metric"]
+                    for row in hard_comparisons
+                    if row["task_name"] == task_name
+                    and str(row["common_filters"]["model"]) == model
+                }
+            )
+        )
+        for model in configured_models
+        for task_name in enabled_hard_tasks
+    }
+    missing_hard_metrics = {
+        task_name: metrics
+        for task_name, metrics in missing_hard_metrics.items()
+        if metrics
+    }
+    if missing_hard_metrics:
+        raise ValueError(
+            "Final hard-negative comparisons require FPR and pairwise-ordering "
+            f"evidence per task; missing {missing_hard_metrics}"
+        )
 
 
 def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> None:
     for key in REQUIRED_TOP_KEYS:
         if key not in cfg:
             raise ValueError(f"Missing top-level key: {key}")
-    if cfg["protocol_stage"] not in {"pilot", "frozen"}:
-        raise ValueError("protocol_stage must be 'pilot' or 'frozen'")
+    k_values = _parse_positive_int_set(cfg.get("k_values", ""), field="k_values")
+    try:
+        selection_k = int(cfg["selection_k"])
+    except (TypeError, ValueError) as err:
+        raise ValueError("selection_k must be an integer") from err
+    if selection_k not in k_values:
+        raise ValueError(
+            f"selection_k={selection_k} must be present in k_values={sorted(k_values)}"
+        )
+    for field in ("seeds", "bootstrap_samples"):
+        try:
+            value = int(cfg[field])
+        except (TypeError, ValueError) as err:
+            raise ValueError(f"{field} must be an integer") from err
+        if value < 1:
+            raise ValueError(f"{field} must be positive")
+    if not str(cfg["views"]).strip() or not str(cfg["layers"]).strip():
+        raise ValueError("views and layers must be non-empty")
+    activation_views = tuple(
+        value.strip()
+        for value in str(cfg["views"]).split(",")
+        if value.strip()
+    )
+    if len(set(activation_views)) != len(activation_views):
+        raise ValueError("views must not contain duplicate activation views")
+    probes = {
+        value.strip()
+        for value in str(cfg["probes"]).split(",")
+        if value.strip()
+    }
+    if not probes:
+        raise ValueError("probes must contain at least one registered monitor")
+    balance_modes = {
+        value.strip()
+        for value in str(cfg["balance_modes"]).split(",")
+        if value.strip()
+    }
+    if not balance_modes or not balance_modes.issubset({"balanced", "imbalanced"}):
+        raise ValueError(
+            "balance_modes must contain balanced and/or imbalanced"
+        )
+    for field in ("run_black_box_baselines", "run_falsification_suite"):
+        if not isinstance(cfg[field], bool):
+            raise ValueError(f"{field} must be boolean")
+    if cfg["protocol_stage"] not in {"selection", "frozen"}:
+        raise ValueError("protocol_stage must be 'selection' or 'frozen'")
+    if cfg["execution_mode"] not in {"selection", "confirmatory"}:
+        raise ValueError("execution_mode must be 'selection' or 'confirmatory'")
+    expected_mode = {
+        "selection": "selection",
+        "frozen": "confirmatory",
+    }[cfg["protocol_stage"]]
+    if cfg["execution_mode"] != expected_mode:
+        raise ValueError(
+            f"protocol_stage={cfg['protocol_stage']} requires "
+            f"execution_mode={expected_mode}"
+        )
     if (
         not cfg.get("task_pairs")
         and not cfg.get("calibration_pairs")
@@ -852,12 +1100,16 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                 raise ValueError(
                     f"Evaluation-only task {source_task} cannot be used as a training source"
                 )
-    if not np.isclose(float(cfg["max_fpr"]), 0.01):
-        raise ValueError("The registered primary operating point must be max_fpr=0.01")
-    if int(cfg["min_calibration_negatives"]) < 1000:
+    if not np.isclose(float(cfg["max_reference_alert_rate"]), 0.01):
         raise ValueError(
-            "At least 1,000 negative calibration examples are required even for a pilot"
+            "The registered operating budget must be max_reference_alert_rate=0.01"
         )
+    if int(cfg["min_reference_groups"]) < 1000:
+        raise ValueError(
+            "At least 1,000 independent reference groups are required for selection"
+        )
+    _validate_reference_protocol(cfg, required=final_protocol)
+    _validate_claim_gates(cfg, required=final_protocol)
     run_falsification = bool(cfg.get("run_falsification_suite", False))
     falsification_bundle = _validate_falsification_registry(
         cfg,
@@ -949,9 +1201,9 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
         if cfg.get("run_black_box_baselines", False):
             for key in (
                 "labeled_data",
-                "benign_labeled_data",
+                "reference_data",
                 "text_embedding_cache_dirs",
-                "benign_embedding_cache_dir",
+                "reference_embedding_cache_dir",
                 "llm_judge_cache_dir",
             ):
                 if not model_cfg.get(key):
@@ -984,7 +1236,20 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                 )
             )
         if check_paths:
-            calibration_dirs = model_cfg.get("calibration_dirs", {})
+            labeled_hashes = {
+                task_name: file_sha256(Path(path_value))
+                for task_name, path_value in (
+                    model_cfg.get("labeled_data", {}) or {}
+                ).items()
+                if Path(path_value).exists()
+            }
+            reference_data_path = model_cfg.get("reference_data")
+            reference_data_sha256 = (
+                file_sha256(Path(reference_data_path))
+                if reference_data_path
+                and Path(reference_data_path).exists()
+                else None
+            )
             feature_groups: dict[str, dict[str, set[str]]] = {}
             for task_name, path_str in model_cfg["feature_dirs"].items():
                 if (
@@ -993,40 +1258,54 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                 ):
                     required_splits = ("test",)
                 else:
-                    required_splits = (
-                        ("train", "eval", "test")
-                        if task_name in calibration_dirs
-                        else ("train", "calibration", "eval", "test")
-                    )
+                    required_splits = ("train", "eval", "test")
                 feature_groups[task_name] = _validate_feature_directory(
                     Path(path_str),
                     model_cfg,
                     task_name,
-                    int(cfg["min_calibration_negatives"]),
+                    int(cfg["min_reference_groups"]),
                     required_splits,
                     final_protocol,
+                    activation_views,
+                    labeled_hashes.get(task_name),
                 )
-            for task_name, path_str in calibration_dirs.items():
-                calibration_groups = _validate_feature_directory(
-                    Path(path_str),
-                    model_cfg,
-                    f"{task_name}_benign_calibration",
-                    int(cfg["min_calibration_negatives"]),
-                    ("calibration",),
-                    final_protocol,
+            reference_groups = _validate_feature_directory(
+                Path(model_cfg["reference_feature_dir"]),
+                model_cfg,
+                "reference_traffic",
+                int(cfg["min_reference_groups"]),
+                ("calibration", "test"),
+                final_protocol,
+                activation_views,
+                reference_data_sha256,
+            )
+            if (
+                final_protocol
+                and len(reference_groups.get("test", set())) < 10_000
+            ):
+                raise ValueError(
+                    f"Final reference holdout for {model_cfg['name']} requires "
+                    "at least 10,000 independent groups"
                 )
-                source_groups = set().union(*feature_groups.get(task_name, {}).values())
-                overlap = source_groups.intersection(
-                    calibration_groups.get("calibration", set())
+            all_source_groups = set().union(
+                *(
+                    split_groups
+                    for groups in feature_groups.values()
+                    for split_groups in groups.values()
+                )
+            )
+            for split in ("calibration", "test"):
+                overlap = all_source_groups.intersection(
+                    reference_groups.get(split, set())
                 )
                 if overlap:
                     raise ValueError(
-                        f"Dedicated calibration for {model_cfg['name']} / {task_name} overlaps "
-                        f"{len(overlap)} source train/eval/test groups"
+                        f"Reference {split} for {model_cfg['name']} overlaps "
+                        f"{len(overlap)} behavior groups"
                     )
             embedding_dirs = model_cfg.get("text_embedding_cache_dirs", {})
-            benign_embedding_dir = model_cfg.get("benign_embedding_cache_dir")
-            if embedding_dirs or benign_embedding_dir:
+            reference_embedding_dir = model_cfg.get("reference_embedding_cache_dir")
+            if embedding_dirs or reference_embedding_dir:
                 if not embedding_views:
                     raise ValueError(
                         "text_embedding_views are required to validate embedding caches"
@@ -1039,8 +1318,9 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                         task_name=task_name,
                         views=embedding_views,
                         model_cfg=model_cfg,
-                        min_calibration_negatives=int(cfg["min_calibration_negatives"]),
-                        calibration_only=False,
+                        min_reference_groups=int(cfg["min_reference_groups"]),
+                        reference_only=False,
+                        expected_dataset_sha256=labeled_hashes.get(task_name),
                     )
                     embedding_caches.extend(task_caches)
                     prompt_cache = next(
@@ -1055,27 +1335,28 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                         prompt_hashes_by_task[task_name] = set(
                             prompt_cache["normalized_text_sha256"].tolist()
                         )
-                if benign_embedding_dir:
-                    benign_caches = _validate_embedding_cache_directory(
-                        Path(benign_embedding_dir),
-                        task_name="benign_calibration",
+                if reference_embedding_dir:
+                    reference_caches = _validate_embedding_cache_directory(
+                        Path(reference_embedding_dir),
+                        task_name="reference_traffic",
                         views=embedding_views,
                         model_cfg=model_cfg,
-                        min_calibration_negatives=int(cfg["min_calibration_negatives"]),
-                        calibration_only=True,
+                        min_reference_groups=int(cfg["min_reference_groups"]),
+                        reference_only=True,
+                        expected_dataset_sha256=reference_data_sha256,
                     )
-                    embedding_caches.extend(benign_caches)
-                    benign_prompt_cache = next(
+                    embedding_caches.extend(reference_caches)
+                    reference_prompt_cache = next(
                         (
                             cache
-                            for cache in benign_caches
+                            for cache in reference_caches
                             if cache["metadata"]["view"] == "prompt_text"
                         ),
                         None,
                     )
-                    if benign_prompt_cache is not None:
-                        prompt_hashes_by_task["benign_calibration"] = set(
-                            benign_prompt_cache["normalized_text_sha256"].tolist()
+                    if reference_prompt_cache is not None:
+                        prompt_hashes_by_task["reference_traffic"] = set(
+                            reference_prompt_cache["normalized_text_sha256"].tolist()
                         )
                 signatures = {_embedding_signature(cache) for cache in embedding_caches}
                 if len(signatures) > 1:
@@ -1100,34 +1381,33 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                         Path(path_str),
                         task_name=task_name,
                         model_cfg=model_cfg,
-                        calibration_only=False,
+                        reference_only=False,
                         falsification_bundle=falsification_bundle,
                     )
                 _validate_labeled_confidence_data(
-                    Path(model_cfg["benign_labeled_data"]),
-                    task_name="benign_calibration",
+                    Path(model_cfg["reference_data"]),
+                    task_name="reference_traffic",
                     model_cfg=model_cfg,
-                    calibration_only=True,
+                    reference_only=True,
                     falsification_bundle=None,
                 )
-
-    if not final_protocol:
-        _validate_benign_audit_protocol(cfg, required=False)
 
     if final_protocol:
         if cfg["protocol_stage"] != "frozen":
             raise ValueError("Final execution requires protocol_stage=frozen")
-        if int(cfg["min_calibration_negatives"]) < 10_000:
+        if int(cfg["min_reference_groups"]) < 10_000:
             raise ValueError(
-                "Final execution requires at least 10,000 independent benign calibration groups"
+                "Final execution requires at least 10,000 independent reference groups"
+            )
+        if int(cfg["reference_traffic_protocol"].get("holdout_groups", 0)) < 10_000:
+            raise ValueError(
+                "Final execution requires at least 10,000 reference holdout groups"
             )
         if int(cfg.get("seeds", 0)) < 10:
             raise ValueError(
                 "Final execution requires at least 10 few-shot training seeds"
             )
-        final_k_values = _parse_positive_int_set(
-            cfg.get("k_values", ""), field="k_values"
-        )
+        final_k_values = k_values
         if final_k_values != FINAL_K_VALUES:
             raise ValueError("Final execution requires k_values=1,2,4,8,16,32")
         if cfg.get("balance_modes") != "balanced":
@@ -1139,7 +1419,7 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
             raise ValueError(
                 "Final execution requires at least three genuinely different model families"
             )
-        _validate_benign_audit_protocol(cfg, required=True)
+        _validate_reference_protocol(cfg, required=True)
         _validate_embedding_lock(cfg, required=True)
         judge_model = _validate_judge_lock(cfg, required=True)
         if judge_model is None or judge_model.get("protocol_role") != "frozen_primary":
@@ -1172,11 +1452,6 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
             raise ValueError(
                 "Final execution requires an existing pre-registered falsification_comparisons_file"
             )
-        source_tasks = {
-            pair["source_task"]
-            for key in ("task_pairs", "calibration_pairs", "transfer_pairs")
-            for pair in cfg.get(key, [])
-        }
         registered_tasks = configured_tasks
         for model in models:
             assert judge_model is not None
@@ -1191,28 +1466,25 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
                 raise ValueError(
                     f"Final model {model['name']} must use a judge from a different model family"
                 )
-            missing_calibration = sorted(
-                source_tasks.difference(model.get("calibration_dirs", {}))
-            )
-            if missing_calibration:
+            if not model.get("reference_feature_dir"):
                 raise ValueError(
-                    f"Final model {model['name']} lacks dedicated benign calibration_dirs for {missing_calibration}"
+                    f"Final model {model['name']} lacks reference features"
                 )
             missing_embedding_tasks = sorted(
                 registered_tasks.difference(model.get("text_embedding_cache_dirs", {}))
             )
-            if missing_embedding_tasks or not model.get("benign_embedding_cache_dir"):
+            if missing_embedding_tasks or not model.get("reference_embedding_cache_dir"):
                 raise ValueError(
                     f"Final model {model['name']} lacks frozen embedding caches for "
-                    f"tasks={missing_embedding_tasks} or dedicated benign calibration"
+                    f"tasks={missing_embedding_tasks} or reference traffic"
                 )
             missing_labeled_tasks = sorted(
                 registered_tasks.difference(model.get("labeled_data", {}))
             )
-            if missing_labeled_tasks or not model.get("benign_labeled_data"):
+            if missing_labeled_tasks or not model.get("reference_data"):
                 raise ValueError(
                     f"Final model {model['name']} lacks labeled text data for "
-                    f"tasks={missing_labeled_tasks} or dedicated benign calibration"
+                    f"tasks={missing_labeled_tasks} or reference traffic"
                 )
         _validate_final_falsification_coverage(
             cfg,
@@ -1234,6 +1506,18 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
             )
         comparison_cfg = (
             yaml.safe_load(Path(comparisons_file).read_text(encoding="utf-8")) or {}
+        )
+        assert falsification_comparisons_bundle is not None
+        assert falsification_bundle is not None
+        _validate_frozen_artifact_provenance(
+            cfg,
+            registry_sha256=falsification_bundle[1],
+            comparisons_path=Path(comparisons_file),
+            comparisons_config=comparison_cfg,
+            falsification_comparisons_path=Path(
+                cfg["falsification_comparisons_file"]
+            ),
+            falsification_comparisons_config=falsification_comparisons_bundle[0],
         )
         comparisons = comparison_cfg.get("comparisons", [])
         if not comparisons:

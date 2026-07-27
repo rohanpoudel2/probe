@@ -6,15 +6,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-from data.benign_audit import (
-    AUDIT_LABEL_SOURCE,
-    AUDIT_PROTOCOL,
-    validate_accepted_audit_metadata,
-)
-from data.benign_screening import (
-    ANNOTATION_PROTOCOL as BENIGN_ANNOTATION_PROTOCOL,
-    LABEL_SOURCE as BENIGN_LABEL_SOURCE,
-    screened_text_sha256,
+from data.reference_traffic import (
+    REFERENCE_LABEL_SOURCE,
+    REFERENCE_PROTOCOL,
+    validate_reference_annotation_metadata,
 )
 
 
@@ -65,49 +60,27 @@ def _last_user_content(messages: list[dict[str, str]]) -> str:
     raise ValueError("Rollout has no user message")
 
 
-def _validate_benign_annotation(
+def _validate_reference_annotation(
     rollout: dict[str, Any], annotation: dict[str, Any]
 ) -> None:
     rollout_id = rollout.get("rollout_id")
     if annotation.get("label") != 0:
         raise ValueError(
-            f"Benign candidate {rollout_id} must be excluded unless its accepted label is 0"
+            f"Reference rollout {rollout_id} must use membership value 0"
         )
     if (
-        annotation.get("label_source") == AUDIT_LABEL_SOURCE
-        and annotation.get("annotation_protocol") == AUDIT_PROTOCOL
-    ):
-        validate_accepted_audit_metadata(rollout, annotation.get("metadata"))
-        return
-    if (
-        annotation.get("label_source") != BENIGN_LABEL_SOURCE
-        or annotation.get("annotation_protocol") != BENIGN_ANNOTATION_PROTOCOL
+        annotation.get("label_source") != REFERENCE_LABEL_SOURCE
+        or annotation.get("annotation_protocol") != REFERENCE_PROTOCOL
     ):
         raise ValueError(
-            f"Benign candidate {rollout_id} lacks the frozen screening protocol"
+            f"Reference rollout {rollout_id} lacks the frozen reference contract"
         )
-    metadata = annotation.get("metadata")
-    if not isinstance(metadata, dict):
-        raise ValueError(f"Benign candidate {rollout_id} lacks screening metadata")
-    n_raters = metadata.get("n_independent_raters")
-    if (
-        not isinstance(n_raters, int)
-        or isinstance(n_raters, bool)
-        or n_raters < 2
-        or metadata.get("unanimous_eligible") is not True
-    ):
-        raise ValueError(
-            f"Benign candidate {rollout_id} lacks unanimous two-rater screening"
-        )
-    if metadata.get("screened_text_sha256") != screened_text_sha256(rollout):
-        raise ValueError(
-            f"Benign candidate {rollout_id} has a stale screening text hash"
-        )
+    validate_reference_annotation_metadata(rollout, annotation.get("metadata"))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Merge independently adjudicated labels into rollouts"
+        description="Merge frozen post-generation annotations into rollouts"
     )
     parser.add_argument("--rollouts", required=True)
     parser.add_argument("--annotations", required=True)
@@ -143,8 +116,8 @@ def main() -> None:
             if annotation.get("excluded") is True:
                 excluded += 1
                 continue
-            if rollout.get("task_family") == "benign_calibration":
-                _validate_benign_annotation(rollout, annotation)
+            if rollout.get("task_family") == "reference_traffic":
+                _validate_reference_annotation(rollout, annotation)
             final_answer = (
                 annotation.get("final_answer")
                 or rollout.get("final_answer")

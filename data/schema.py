@@ -11,8 +11,7 @@ Span = Tuple[int, int]
 class TaskExample:
     """Structured example for alignment behavior tasks.
 
-    Phase 1 extends the Phase 0 schema with explicit named text segments.
-    The extractor uses these segments to compute token-level spans for
+    Structured text segments let the extractor compute token-level spans for
     span-aware pooling.
     """
 
@@ -21,7 +20,6 @@ class TaskExample:
     prompt: str
     label: int
     question_id: Optional[str] = None
-    turn_id: Optional[int] = None
     condition: Optional[str] = None
     context: Optional[str] = None
     assistant_response: Optional[str] = None
@@ -48,18 +46,3 @@ class TaskExample:
             segments["answer"] = self.assistant_response
         self.segments = segments
         return segments
-
-    def full_text(self) -> str:
-        ordered = [text for _, text in self.build_segments().items() if text]
-        return "\n\n".join(ordered)
-
-    def to_record(self) -> Dict[str, Any]:
-        return {
-            "text": self.full_text(),
-            "label": self.label,
-            "example_id": self.example_id,
-            "question_id": self.question_id,
-            "condition": self.condition,
-            "task_family": self.task_family,
-            **self.metadata,
-        }

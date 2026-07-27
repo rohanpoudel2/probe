@@ -7,7 +7,7 @@ from evaluation.metrics import compute_fsei
 
 def select_best_view_layer(
     summary: pd.DataFrame,
-    selection_metric: str = "eval_recall_at_1pct_fpr_mean",
+    selection_metric: str = "eval_tpr_at_1pct_reference_alert_budget_mean",
 ) -> pd.DataFrame:
     if summary.empty:
         return pd.DataFrame()
@@ -30,15 +30,18 @@ def make_view_layer_table(best_df: pd.DataFrame) -> pd.DataFrame:
         "model",
         "layer",
         "view",
-        "eval_recall_at_1pct_fpr_mean",
-        "eval_recall_at_1pct_fpr_ci_low",
-        "eval_recall_at_1pct_fpr_ci_high",
-        "test_recall_at_1pct_fpr_mean",
-        "test_recall_at_1pct_fpr_ci_low",
-        "test_recall_at_1pct_fpr_ci_high",
-        "transfer_recall_at_1pct_fpr_mean",
-        "transfer_recall_at_1pct_fpr_ci_low",
-        "transfer_recall_at_1pct_fpr_ci_high",
+        "eval_tpr_at_1pct_reference_alert_budget_mean",
+        "eval_tpr_at_1pct_reference_alert_budget_ci_low",
+        "eval_tpr_at_1pct_reference_alert_budget_ci_high",
+        "test_tpr_at_1pct_reference_alert_budget_mean",
+        "test_tpr_at_1pct_reference_alert_budget_ci_low",
+        "test_tpr_at_1pct_reference_alert_budget_ci_high",
+        "transfer_tpr_at_1pct_reference_alert_budget_mean",
+        "transfer_tpr_at_1pct_reference_alert_budget_ci_low",
+        "transfer_tpr_at_1pct_reference_alert_budget_ci_high",
+        "reference_holdout_alert_rate_mean",
+        "reference_holdout_alert_rate_ci_low",
+        "reference_holdout_alert_rate_ci_high",
         "test_auroc_mean",
         "transfer_auroc_mean",
     ]
@@ -61,11 +64,14 @@ def make_transfer_table(best_df: pd.DataFrame) -> pd.DataFrame:
         "transfer_auroc_mean",
         "transfer_auroc_ci_low",
         "transfer_auroc_ci_high",
-        "transfer_recall_at_1pct_fpr_mean",
-        "transfer_recall_at_1pct_fpr_ci_low",
-        "transfer_recall_at_1pct_fpr_ci_high",
+        "transfer_tpr_at_1pct_reference_alert_budget_mean",
+        "transfer_tpr_at_1pct_reference_alert_budget_ci_low",
+        "transfer_tpr_at_1pct_reference_alert_budget_ci_high",
         "test_auroc_mean",
-        "test_recall_at_1pct_fpr_mean",
+        "test_tpr_at_1pct_reference_alert_budget_mean",
+        "reference_holdout_alert_rate_mean",
+        "reference_holdout_alert_rate_ci_low",
+        "reference_holdout_alert_rate_ci_high",
     ]
     cols = [c for c in cols if c in best_df.columns]
     return best_df[cols].sort_values(["source_task", "target_task", "model", "probe", "k"]).reset_index(drop=True)
@@ -73,7 +79,7 @@ def make_transfer_table(best_df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_task_fsei(
     best_df: pd.DataFrame,
-    outcome_metric: str = "transfer_recall_at_1pct_fpr_mean",
+    outcome_metric: str = "transfer_tpr_at_1pct_reference_alert_budget_mean",
 ) -> pd.DataFrame:
     if best_df.empty:
         return pd.DataFrame()
@@ -86,7 +92,9 @@ def compute_task_fsei(
         for _, row in group.iterrows():
             k = int(row["k"])
             primary = row.get(outcome_metric, float("nan"))
-            fallback = row.get("test_recall_at_1pct_fpr_mean", float("nan"))
+            fallback = row.get(
+                "test_tpr_at_1pct_reference_alert_budget_mean", float("nan")
+            )
             metric_by_k[k] = float(primary) if pd.notnull(primary) else float("nan")
             fallback_by_k[k] = float(fallback) if pd.notnull(fallback) else float("nan")
 

@@ -80,7 +80,9 @@ def main() -> None:
         description="Plot cross-model transfer and label-budget results"
     )
     parser.add_argument("--results_dir", required=True)
-    parser.add_argument("--metric", default="transfer_recall_at_1pct_fpr_mean")
+    parser.add_argument(
+        "--metric", default="transfer_tpr_at_1pct_reference_alert_budget_mean"
+    )
     args = parser.parse_args()
 
     report_path = Path(args.results_dir) / "task_frozen_transfer_report.csv"

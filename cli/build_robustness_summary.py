@@ -16,9 +16,9 @@ def main() -> None:
 
     group_cols = ["model", "source_task", "target_task"]
     metrics = [
-        "eval_recall_at_1pct_fpr_mean",
-        "test_recall_at_1pct_fpr_mean",
-        "transfer_recall_at_1pct_fpr_mean",
+        "eval_tpr_at_1pct_reference_alert_budget_mean",
+        "test_tpr_at_1pct_reference_alert_budget_mean",
+        "transfer_tpr_at_1pct_reference_alert_budget_mean",
         "transfer_auroc_mean",
     ]
     rows = []

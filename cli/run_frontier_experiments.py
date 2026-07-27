@@ -99,9 +99,9 @@ def main() -> None:
         help="Auxiliary honesty-control manifest.",
     )
     parser.add_argument(
-        "--appendix-ablation-config",
-        default=None,
-        help="Optional appendix ablation suite config.",
+        "--extended-ablation-config",
+        default="experiments/controls/extended_ablation_suite.yaml",
+        help="Extended ablation suite config.",
     )
     parser.add_argument(
         "--controls-config",
@@ -121,9 +121,9 @@ def main() -> None:
         help="Run negative controls for the honesty auxiliary manifest.",
     )
     parser.add_argument(
-        "--run-appendix-ablations",
+        "--run-extended-ablations",
         action="store_true",
-        help="Run appendix-style ablations after the main protocol.",
+        help="Run the extended ablation suite after the main protocol.",
     )
     parser.add_argument("--device", default=None, help="Execution device for model-backed runs.")
     parser.add_argument("--release-artifacts", action="store_true")
@@ -138,18 +138,18 @@ def main() -> None:
         _ensure_config_exists(args.controls_config, label="Controls config")
     if not args.no_main:
         _ensure_config_exists(args.main_ablation_config, label="Main ablation config")
-    if args.appendix_ablation_config is not None:
+    if args.run_extended_ablations:
         _ensure_config_exists(
-            args.appendix_ablation_config,
-            label="Appendix ablation config",
+            args.extended_ablation_config,
+            label="Extended ablation config",
         )
     if not args.no_honesty:
         _ensure_config_exists(args.honesty_config, label="Honesty auxiliary config")
 
-    if args.no_main and args.no_honesty and not args.run_appendix_ablations:
+    if args.no_main and args.no_honesty and not args.run_extended_ablations:
         raise RuntimeError(
             "No experiments selected. Remove --no-main or --no-honesty, or pass "
-            "--run-appendix-ablations."
+            "--run-extended-ablations."
         )
 
     commands: list[list[str]] = []
@@ -183,10 +183,10 @@ def main() -> None:
             )
         )
 
-    if args.run_appendix_ablations and args.appendix_ablation_config is not None:
+    if args.run_extended_ablations:
         commands.append(
             _build_ablation_suite_cmd(
-                config=args.appendix_ablation_config,
+                config=args.extended_ablation_config,
                 device=args.device,
                 dry_run=args.dry_run,
             )

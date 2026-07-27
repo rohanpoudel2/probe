@@ -13,7 +13,7 @@ from cli.common import load_yaml
 from data.rollout_schema import ScenarioRecord
 
 
-PREFILTER_VERSION = "wildchat-benign-candidate-v1"
+PREFILTER_VERSION = "wildchat-reference-traffic-v1"
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -59,25 +59,31 @@ def _first_user_message(row: dict[str, Any]) -> str | None:
     return None
 
 
-def build_benign_scenarios(
+def build_reference_scenarios(
     rows: Iterable[tuple[int, dict[str, Any]]],
     *,
     source_repo: str,
     source_revision: str,
     source_split: str,
     raw_file_sha256: str,
-    max_scenarios: int,
+    calibration_scenarios: int,
+    holdout_scenarios: int,
     min_chars: int,
     max_chars: int,
     selection_seed: int,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Create prompt-only candidates; this function never assigns benign labels."""
+    """Create deterministic, group-disjoint reference and holdout scenarios."""
 
     if not COMMIT_RE.fullmatch(source_revision):
         raise ValueError(
-            "Benign source revision must be a full 40-character commit hash"
+            "Reference source revision must be a full 40-character commit hash"
         )
-    if max_scenarios < 1 or min_chars < 1 or max_chars < min_chars:
+    if (
+        calibration_scenarios < 1
+        or holdout_scenarios < 1
+        or min_chars < 1
+        or max_chars < min_chars
+    ):
         raise ValueError("Invalid candidate-count or character-length bounds")
 
     candidates: list[tuple[str, ScenarioRecord]] = []
@@ -115,13 +121,14 @@ def build_benign_scenarios(
         rank = hashlib.sha256(
             f"{selection_seed}:{conversation_hash}:{prompt_hash}".encode("utf-8")
         ).hexdigest()
-        group_id = f"benign_{prompt_hash[:20]}"
+        group_id = f"reference_{prompt_hash[:20]}"
         scenario = ScenarioRecord(
             scenario_id=f"{group_id}__wildchat__{rank[:12]}",
             group_id=group_id,
-            task_family="benign_calibration",
+            task_family="reference_traffic",
             messages=[{"role": "user", "content": prompt}],
-            condition="natural_benign_candidate",
+            condition="natural_reference_traffic",
+            # Assigned after deterministic rank selection below.
             protocol_split="calibration",
             source=f"{source_repo}@{source_revision}:{source_split}",
             metadata={
@@ -131,22 +138,49 @@ def build_benign_scenarios(
                 "source_revision": source_revision,
                 "raw_file_sha256": raw_file_sha256,
                 "prefilter_version": PREFILTER_VERSION,
-                "screening_status": "pending_independent_review",
+                "semantic_label_status": "unlabeled_reference_membership",
                 "upstream_toxic": False,
                 "upstream_redacted": False,
             },
         )
         candidates.append((rank, scenario))
 
-    selected = sorted(candidates, key=lambda item: item[0])[:max_scenarios]
+    requested = calibration_scenarios + holdout_scenarios
+    selected = sorted(candidates, key=lambda item: item[0])[:requested]
+    output: list[dict[str, Any]] = []
+    for index, (_, scenario) in enumerate(selected):
+        split = "calibration" if index < calibration_scenarios else "test"
+        partitioned = ScenarioRecord(
+            scenario_id=scenario.scenario_id,
+            group_id=scenario.group_id,
+            task_family=scenario.task_family,
+            messages=scenario.messages,
+            condition=scenario.condition,
+            protocol_split=split,
+            source=scenario.source,
+            metadata={
+                **scenario.metadata,
+                "reference_partition": split,
+            },
+        )
+        output.append(partitioned.to_dict())
     rejection_counts["eligible_before_sampling"] = len(candidates)
-    rejection_counts["selected"] = len(selected)
-    return [scenario.to_dict() for _, scenario in selected], dict(rejection_counts)
+    rejection_counts["selected_calibration"] = min(
+        len(selected), calibration_scenarios
+    )
+    rejection_counts["selected_holdout"] = max(
+        0, len(selected) - calibration_scenarios
+    )
+    if len(selected) < requested:
+        raise ValueError(
+            f"Reference prefilter produced {len(selected)} rows; requested {requested}"
+        )
+    return output, dict(rejection_counts)
 
 
 def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
-        raise ValueError("No benign candidates survived the prefilter")
+        raise ValueError("No reference-traffic candidates survived the prefilter")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", encoding="utf-8") as handle:
@@ -159,14 +193,18 @@ def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build prompt-only natural-traffic candidates for independent benign screening"
+        description=(
+            "Build prompt-only unlabeled natural reference traffic with a "
+            "group-disjoint calibration and holdout partition"
+        )
     )
     parser.add_argument("--raw_data", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--source_lock", default="experiments/data/huggingface_source_lock.yaml"
     )
-    parser.add_argument("--max_scenarios", type=int, default=25_000)
+    parser.add_argument("--calibration_scenarios", type=int, default=10_000)
+    parser.add_argument("--holdout_scenarios", type=int, default=10_000)
     parser.add_argument("--min_chars", type=int, default=10)
     parser.add_argument("--max_chars", type=int, default=4_000)
     parser.add_argument("--selection_seed", type=int, default=42)
@@ -175,14 +213,15 @@ def main() -> None:
 
     raw_path = Path(args.raw_data)
     raw_sha256 = hashlib.sha256(raw_path.read_bytes()).hexdigest()
-    source = load_yaml(args.source_lock)["sources"]["benign_calibration_raw"]["dataset"]
-    scenarios, counts = build_benign_scenarios(
+    source = load_yaml(args.source_lock)["sources"]["reference_traffic_raw"]["dataset"]
+    scenarios, counts = build_reference_scenarios(
         _read_jsonl(raw_path),
         source_repo=source["repo"],
         source_revision=source["revision"],
         source_split=source.get("split", "train"),
         raw_file_sha256=raw_sha256,
-        max_scenarios=args.max_scenarios,
+        calibration_scenarios=args.calibration_scenarios,
+        holdout_scenarios=args.holdout_scenarios,
         min_chars=args.min_chars,
         max_chars=args.max_chars,
         selection_seed=args.selection_seed,
@@ -195,8 +234,8 @@ def main() -> None:
         "raw_file_sha256": raw_sha256,
         "counts": counts,
         "warning": (
-            "Upstream moderation is only a prefilter. These candidates are not benign labels; "
-            "generate on-policy responses and complete independent screening."
+            "Upstream moderation is a source filter only. Reference membership "
+            "is not a semantic or behavior-negative label."
         ),
     }
     if args.report:

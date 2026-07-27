@@ -19,8 +19,16 @@ def main() -> None:
     transfer = pd.read_csv(results_dir / "task_cross_task_transfer.csv")
 
     checks = []
-    same_mean = float(calib["test_recall_at_1pct_fpr_mean"].mean()) if not calib.empty else float("nan")
-    transfer_mean = float(transfer["transfer_recall_at_1pct_fpr_mean"].mean()) if not transfer.empty else float("nan")
+    same_mean = (
+        float(calib["test_tpr_at_1pct_reference_alert_budget_mean"].mean())
+        if not calib.empty
+        else float("nan")
+    )
+    transfer_mean = (
+        float(transfer["transfer_tpr_at_1pct_reference_alert_budget_mean"].mean())
+        if not transfer.empty
+        else float("nan")
+    )
     checks.append({
         "check_name": "same_task_beats_cross_task",
         "passed": bool(same_mean >= transfer_mean),
@@ -42,7 +50,11 @@ def main() -> None:
             signif = pd.read_csv(signif_path)
         except pd.errors.EmptyDataError:
             signif = pd.DataFrame()
-        p_ok = float((signif["paired_permutation_pvalue"] < 0.05).mean()) if (not signif.empty and "paired_permutation_pvalue" in signif.columns) else 0.0
+        p_ok = (
+            float((signif["holm_adjusted_p_value"] < 0.05).mean())
+            if not signif.empty and "holm_adjusted_p_value" in signif.columns
+            else 0.0
+        )
         checks.append({
             "check_name": "nontrivial_significance_fraction",
             "passed": bool(p_ok > 0.0),

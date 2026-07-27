@@ -33,12 +33,19 @@ from data.text_views import (
     monitored_model_identity,
 )
 from evaluation.metrics import (
-    require_independent_calibration_negatives,
-    select_threshold_at_fpr,
+    alert_rate_summary,
+    compute_alert_rate,
+    require_disjoint_reference_groups,
+    require_independent_reference_groups,
+    select_threshold_at_alert_rate,
 )
 from task_benchmark.sampling import FewShotSelection, sample_few_shot_train
 from tasks import TASK_REGISTRY
-from cli.common import resolve_torch_device
+from cli.common import (
+    bounded_batch_size_for_device,
+    inference_dtype_for_device,
+    resolve_torch_device,
+)
 
 
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -112,8 +119,10 @@ def _load_judge_spec(path: Path, key: str) -> tuple[dict[str, Any], str, str]:
         spec["chat_template_kwargs"], dict
     ):
         raise ValueError("LLM-judge trust_remote_code/chat_template_kwargs are invalid")
-    if spec["protocol_role"] not in {"frozen_primary", "pilot_only"}:
-        raise ValueError("LLM-judge protocol_role must be frozen_primary or pilot_only")
+    if spec["protocol_role"] not in {"frozen_primary", "smoke_test_only"}:
+        raise ValueError(
+            "LLM-judge protocol_role must be frozen_primary or smoke_test_only"
+        )
     labels = [str(spec["negative_label"]).strip(), str(spec["positive_label"]).strip()]
     if not all(labels) or labels[0] == labels[1]:
         raise ValueError(
@@ -176,8 +185,15 @@ class JudgeRuntime:
             raise ValueError("judge_batch_size must be positive")
         self.torch = torch
         self.spec = spec
-        self.batch_size = batch_size
         resolved_device = resolve_torch_device(device)
+        # A 14B decoder leaves little unified-memory headroom on Apple
+        # Silicon. Single-item scoring avoids transient padded-batch peaks;
+        # cache identities are batch-size independent.
+        self.batch_size = bounded_batch_size_for_device(
+            batch_size,
+            resolved_device,
+        )
+        self.resolved_device = resolved_device
         self.tokenizer = AutoTokenizer.from_pretrained(
             spec["model_id"],
             revision=spec["tokenizer_revision"],
@@ -199,19 +215,19 @@ class JudgeRuntime:
         self.negative_token_id, self.positive_token_id = label_ids
         model_kwargs = {
             "revision": spec["model_revision"],
-            "torch_dtype": "auto",
+            "torch_dtype": inference_dtype_for_device(resolved_device),
+            "low_cpu_mem_usage": True,
         }
-        if resolved_device == "auto":
-            model_kwargs["device_map"] = "auto"
         self.model = AutoModelForCausalLM.from_pretrained(
             spec["model_id"],
             trust_remote_code=spec["trust_remote_code"],
             **model_kwargs,
         )
-        if resolved_device != "auto":
-            self.model = self.model.to(resolved_device)
+        self.model = self.model.to(resolved_device)
         self.model.eval()
+        self.model.requires_grad_(False)
         self.model_device = next(self.model.parameters()).device
+        self.model_parameter_dtype = str(next(self.model.parameters()).dtype)
 
     def _render(self, text: str, demonstrations: list[tuple[str, int]]) -> str:
         messages = build_judge_messages(text, demonstrations, self.spec)
@@ -301,7 +317,7 @@ class JudgeRuntime:
         }
 
 
-def _load_examples(task_name: str, path: str, *, calibration_only: bool):
+def _load_examples(task_name: str, path: str, *, reference_only: bool):
     task = TASK_REGISTRY[task_name]()
     examples = task.load(path)
     if any(
@@ -310,10 +326,20 @@ def _load_examples(task_name: str, path: str, *, calibration_only: bool):
         for example in examples
     ):
         raise ValueError("LLM-judge baselines require on-policy model outputs")
-    if calibration_only:
-        if any(example.label != 0 for example in examples):
-            raise ValueError("Dedicated benign judge calibration must be all-negative")
-        split_examples = {"calibration": examples}
+    if reference_only:
+        split_examples = {
+            split: [
+                example
+                for example in examples
+                if example.metadata.get("protocol_split") == split
+            ]
+            for split in ("calibration", "test")
+        }
+        for split, rows in split_examples.items():
+            if not rows or any(example.label != 0 for example in rows):
+                raise ValueError(
+                    f"Reference judge {split} must use membership value 0"
+                )
     else:
         split_examples = declared_protocol_split(
             examples, group_key=task.spec.grouped_split_key
@@ -336,7 +362,7 @@ def _arrays_by_view(split_examples: dict[str, list], view: str):
 def _require_identity(reference: dict[str, str], other: dict[str, str]) -> None:
     if reference != other:
         raise ValueError(
-            "Source, calibration, and transfer judge data must come from the same "
+            "Source, reference, and transfer judge data must come from the same "
             "monitored model and tokenizer revisions"
         )
 
@@ -345,10 +371,10 @@ def _nan_transfer_metrics(row: dict[str, Any]) -> None:
     for metric in (
         "auroc",
         "auprc",
-        "recall_at_frozen_fpr",
-        "recall_at_1pct_fpr",
+        "tpr_at_reference_alert_budget",
+        "tpr_at_1pct_reference_alert_budget",
         "fpr_at_frozen_threshold",
-        "oracle_recall_at_requested_fpr",
+        "oracle_tpr_at_requested_fpr",
         "brier",
         "ece",
     ):
@@ -364,9 +390,9 @@ def main() -> None:
     parser.add_argument("--target_task", default=None, choices=sorted(TASK_REGISTRY))
     parser.add_argument("--target_data", default=None)
     parser.add_argument(
-        "--calibration_task", default=None, choices=sorted(TASK_REGISTRY)
+        "--reference_task", required=True, choices=sorted(TASK_REGISTRY)
     )
-    parser.add_argument("--calibration_data", default=None)
+    parser.add_argument("--reference_data", required=True)
     parser.add_argument("--judge_config", required=True)
     parser.add_argument("--judge_model_key", required=True)
     parser.add_argument("--judge_cache_dir", required=True)
@@ -377,35 +403,34 @@ def main() -> None:
     parser.add_argument("--modes", default="zero_shot,few_shot")
     parser.add_argument("--k_values", default="1,2,4,8,16,32")
     parser.add_argument("--seeds", type=int, default=10)
-    parser.add_argument("--max_fpr", type=float, default=0.01)
-    parser.add_argument("--min_calibration_negatives", type=int, default=1000)
+    parser.add_argument("--max_reference_alert_rate", type=float, default=0.01)
+    parser.add_argument("--min_reference_groups", type=int, default=1000)
     parser.add_argument(
         "--device",
         default="auto",
         help="Execution device: auto|cpu|cuda|cuda:N|mps",
     )
     parser.add_argument("--allow_dirty_code", action="store_true")
-    parser.add_argument("--allow_self_judge_pilot", action="store_true")
+    parser.add_argument("--allow_self_judge_debug", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--selection_only",
+        action="store_true",
+        help="Score source eval and reference traffic without touching test targets.",
+    )
     args = parser.parse_args()
 
     if bool(args.target_task) != bool(args.target_data):
         raise ValueError("--target_task and --target_data must be provided together")
-    if bool(args.calibration_task) != bool(args.calibration_data):
-        raise ValueError(
-            "--calibration_task and --calibration_data must be provided together"
-        )
     if (
-        args.source_task == "benign_calibration"
-        or args.target_task == "benign_calibration"
+        args.source_task == "reference_traffic"
+        or args.target_task == "reference_traffic"
     ):
         raise ValueError(
-            "benign_calibration can only be supplied through --calibration_task"
+            "reference_traffic cannot be a training or transfer task"
         )
-    if args.calibration_task and args.calibration_task != "benign_calibration":
-        raise ValueError(
-            "Dedicated calibration must use the benign_calibration task contract"
-        )
+    if args.reference_task != "reference_traffic":
+        raise ValueError("Operational calibration requires reference_traffic")
     views = [value.strip() for value in args.views.split(",") if value.strip()]
     if not views or not set(views).issubset(ALLOWED_TEXT_VIEWS):
         raise ValueError(
@@ -428,34 +453,26 @@ def main() -> None:
     if code_dirty and not args.allow_dirty_code:
         raise RuntimeError(
             "Refusing LLM-judge scoring from a dirty worktree; commit the protocol or "
-            "pass --allow_dirty_code for a non-final pilot"
+            "pass --allow_dirty_code for a non-confirmatory debug run"
         )
 
     source_examples, source_identity, source_hash = _load_examples(
-        args.source_task, args.source_data, calibration_only=False
+        args.source_task, args.source_data, reference_only=False
     )
     if (
         spec["model_id"] == source_identity["monitored_model_id"]
-        and not args.allow_self_judge_pilot
+        and not args.allow_self_judge_debug
     ):
         raise ValueError(
             "The registered judge must be independent of the monitored model"
         )
-    if args.calibration_data:
-        calibration_examples, calibration_identity, calibration_hash = _load_examples(
-            args.calibration_task, args.calibration_data, calibration_only=True
-        )
-        _require_identity(source_identity, calibration_identity)
-    else:
-        if not source_examples.get("calibration"):
-            raise ValueError(
-                "Source data has no calibration split; provide dedicated benign calibration"
-            )
-        calibration_examples = {"calibration": source_examples["calibration"]}
-        calibration_hash = source_hash
-    if args.target_data:
+    reference_examples, reference_identity, reference_hash = _load_examples(
+        args.reference_task, args.reference_data, reference_only=True
+    )
+    _require_identity(source_identity, reference_identity)
+    if args.target_data and not args.selection_only:
         target_examples, target_identity, target_hash = _load_examples(
-            target_task, args.target_data, calibration_only=False
+            target_task, args.target_data, reference_only=False
         )
         _require_identity(source_identity, target_identity)
     else:
@@ -467,7 +484,10 @@ def main() -> None:
     cache_dir = Path(args.judge_cache_dir)
     out_file = (
         results_dir
-        / f"{args.source_task}__to__{target_task}__llm_judge_baselines.jsonl"
+        / (
+            f"{args.source_task}__to__{target_task}__llm_judge_baselines"
+            f"{'__selection' if args.selection_only else ''}.jsonl"
+        )
     )
     if args.overwrite and out_file.exists():
         out_file.unlink()
@@ -479,7 +499,7 @@ def main() -> None:
     with out_file.open("a", encoding="utf-8") as handle:
         for view in views:
             source = _arrays_by_view(source_examples, view)
-            calibration = _arrays_by_view(calibration_examples, view)["calibration"]
+            reference = _arrays_by_view(reference_examples, view)
             target = (
                 _arrays_by_view(target_examples, view)["test"]
                 if target_examples is not None
@@ -527,7 +547,7 @@ def main() -> None:
                     "source_task": args.source_task,
                     "target_task": target_task,
                     "source_data_sha256": source_hash,
-                    "calibration_data_sha256": calibration_hash,
+                    "reference_data_sha256": reference_hash,
                     "target_data_sha256": target_hash,
                     "demonstration_example_ids": train["example_ids"][
                         demo_indices
@@ -543,11 +563,13 @@ def main() -> None:
                 context_hash = judge_context_hash(context_payload)
                 cache_path = cache_dir / f"{context_hash}.npz"
                 expected_splits = {
-                    "source_calibration",
+                    "reference_calibration",
+                    "reference_holdout",
                     "source_eval",
-                    "source_test",
                 }
-                if target is not None:
+                if not args.selection_only:
+                    expected_splits.add("source_test")
+                if target is not None and not args.selection_only:
                     expected_splits.add("target_test")
                 if cache_path.exists():
                     scored, cache_metadata = load_judge_cache(
@@ -567,11 +589,13 @@ def main() -> None:
                             device=args.device,
                         )
                     bundles = {
-                        "source_calibration": calibration,
+                        "reference_calibration": reference["calibration"],
+                        "reference_holdout": reference["test"],
                         "source_eval": source["eval"],
-                        "source_test": source["test"],
                     }
-                    if target is not None:
+                    if not args.selection_only:
+                        bundles["source_test"] = source["test"]
+                    if target is not None and not args.selection_only:
                         bundles["target_test"] = target
                     scored = {
                         split_name: runtime.score_bundle(bundle, demonstrations)
@@ -591,6 +615,12 @@ def main() -> None:
                         "judge_protocol_role": spec["protocol_role"],
                         "judge_spec_sha256": spec_hash,
                         "judge_config_sha256": config_hash,
+                        "judge_requested_batch_size": int(args.judge_batch_size),
+                        "judge_effective_batch_size": int(runtime.batch_size),
+                        "judge_resolved_device": runtime.resolved_device,
+                        "judge_model_parameter_dtype": (
+                            runtime.model_parameter_dtype
+                        ),
                         "score_semantics": "pairwise_softmax_forced_choice_next_token_logits",
                         "negative_label": spec["negative_label"],
                         "positive_label": spec["positive_label"],
@@ -622,27 +652,42 @@ def main() -> None:
                         f"{args.judge_model_key}-{spec_hash[:12]}__layer-3__{view}__"
                         f"k{k}__seed{result_seed}__"
                         f"{'none' if mode == 'zero_shot' else 'balanced'}"
+                        f"{'__selection' if args.selection_only else ''}"
                     )
                     prediction_path = _prediction_path(predictions_dir, run_id)
                     if run_id in existing and prediction_path.exists():
                         continue
-                    n_calibration_negative_groups = (
-                        require_independent_calibration_negatives(
-                            scored["source_calibration"]["labels"],
-                            scored["source_calibration"]["question_ids"],
-                            min_negative_groups=args.min_calibration_negatives,
+                    n_reference_groups = (
+                        require_independent_reference_groups(
+                            scored["reference_calibration"]["question_ids"],
+                            min_reference_groups=args.min_reference_groups,
                         )
                     )
-                    threshold = select_threshold_at_fpr(
-                        scored["source_calibration"]["labels"],
-                        scored["source_calibration"]["scores"],
-                        max_fpr=args.max_fpr,
-                        min_negatives=args.min_calibration_negatives,
+                    n_reference_holdout_groups = require_independent_reference_groups(
+                        scored["reference_holdout"]["question_ids"],
+                        min_reference_groups=args.min_reference_groups,
+                    )
+                    require_disjoint_reference_groups(
+                        scored["reference_calibration"]["question_ids"],
+                        scored["reference_holdout"]["question_ids"],
+                    )
+                    threshold = select_threshold_at_alert_rate(
+                        scored["reference_calibration"]["scores"],
+                        max_alert_rate=args.max_reference_alert_rate,
+                        min_reference=args.min_reference_groups,
+                    )
+                    holdout_alerts = alert_rate_summary(
+                        scored["reference_holdout"]["scores"], threshold
                     )
                     row: dict[str, Any] = {
                         "status": "ok",
                         "error": False,
                         "run_id": run_id,
+                        "execution_mode": (
+                            "selection"
+                            if args.selection_only
+                            else "confirmatory"
+                        ),
                         "probe": probe,
                         "method_family": "black_box_llm_judge",
                         "judge_mode": mode,
@@ -676,13 +721,40 @@ def main() -> None:
                         "judge_score_semantics": cache_metadata["score_semantics"],
                         "judge_cache_file": cache_metadata["cache_file"],
                         "judge_cache_sha256": cache_metadata["cache_sha256"],
-                        "operating_threshold": float(threshold),
-                        "requested_max_fpr": args.max_fpr,
-                        "threshold_source": "source_calibration_negatives",
-                        "n_calibration_negative": int(
-                            np.sum(scored["source_calibration"]["labels"] == 0)
+                        "judge_effective_batch_size": cache_metadata.get(
+                            "judge_effective_batch_size"
                         ),
-                        "n_calibration_negative_groups": n_calibration_negative_groups,
+                        "judge_resolved_device": cache_metadata.get(
+                            "judge_resolved_device"
+                        ),
+                        "judge_model_parameter_dtype": cache_metadata.get(
+                            "judge_model_parameter_dtype"
+                        ),
+                        "operating_threshold": float(threshold),
+                        "requested_max_reference_alert_rate": args.max_reference_alert_rate,
+                        "threshold_source": "unlabeled_reference_traffic",
+                        "calibration_method": "split_conformal_upper_tail_v1",
+                        "n_reference_calibration": int(
+                            len(scored["reference_calibration"]["scores"])
+                        ),
+                        "n_reference_groups": n_reference_groups,
+                        "n_reference_holdout": int(
+                            len(scored["reference_holdout"]["scores"])
+                        ),
+                        "n_reference_holdout_groups": n_reference_holdout_groups,
+                        "reference_calibration_alert_rate": compute_alert_rate(
+                            scored["reference_calibration"]["scores"], threshold
+                        ),
+                        "reference_holdout_alert_count": holdout_alerts["alerts"],
+                        "reference_holdout_alert_rate": holdout_alerts["rate"],
+                        "reference_holdout_alert_rate_ci_low": holdout_alerts["ci_low"],
+                        "reference_holdout_alert_rate_ci_high": holdout_alerts["ci_high"],
+                        "reference_holdout_alert_budget_violation": bool(
+                            holdout_alerts["ci_low"]
+                            > args.max_reference_alert_rate
+                        ),
+                        "conformal_p_value_resolution": 1.0
+                        / (len(scored["reference_calibration"]["scores"]) + 1.0),
                         "n_train_pos": int(k if mode == "few_shot" else 0),
                         "n_train_neg": int(k if mode == "few_shot" else 0),
                         "n_train_groups": int(k if mode == "few_shot" else 0),
@@ -700,20 +772,38 @@ def main() -> None:
                             )
                         ),
                     }
-                    for prefix, split_name in (
-                        ("calibration", "source_calibration"),
-                        ("eval", "source_eval"),
-                        ("test", "source_test"),
-                    ):
+                    for prefix, split_name in (("eval", "source_eval"),):
                         row.update(
                             _metric_payload(
                                 prefix,
                                 scored[split_name],
                                 threshold,
                                 probability_scores=True,
-                                max_fpr=args.max_fpr,
+                                max_alert_rate=args.max_reference_alert_rate,
                             )
                         )
+                    if "source_test" in scored:
+                        row.update(
+                            _metric_payload(
+                                "test",
+                                scored["source_test"],
+                                threshold,
+                                probability_scores=True,
+                                max_alert_rate=args.max_reference_alert_rate,
+                            )
+                        )
+                    else:
+                        for metric in (
+                            "auroc",
+                            "auprc",
+                            "tpr_at_reference_alert_budget",
+                            "tpr_at_1pct_reference_alert_budget",
+                            "fpr_at_frozen_threshold",
+                            "oracle_tpr_at_requested_fpr",
+                            "brier",
+                            "ece",
+                        ):
+                            row[f"test_{metric}"] = float("nan")
                     if "target_test" in scored:
                         row.update(
                             _metric_payload(
@@ -721,7 +811,7 @@ def main() -> None:
                                 scored["target_test"],
                                 threshold,
                                 probability_scores=True,
-                                max_fpr=args.max_fpr,
+                                max_alert_rate=args.max_reference_alert_rate,
                             )
                         )
                     else:

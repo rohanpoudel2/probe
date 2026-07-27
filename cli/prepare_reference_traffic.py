@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from data.benign_screening import merge_screening_ratings
+from data.reference_traffic import build_reference_annotations
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -39,33 +39,27 @@ def _atomic_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     temporary.replace(path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Merge independent benign-screening ratings into conservative annotations"
+        description=(
+            "Validate on-policy reference traffic and create non-semantic "
+            "reference-membership annotations"
+        )
     )
     parser.add_argument("--rollouts", required=True)
-    parser.add_argument("--ratings", required=True, nargs="+")
     parser.add_argument("--output_annotations", required=True)
     parser.add_argument("--report", required=True)
-    parser.add_argument("--min_independent_raters", type=int, default=2)
     args = parser.parse_args()
 
-    ratings = [
-        row
-        for rating_path in args.ratings
-        for row in _read_jsonl(Path(rating_path))
-    ]
-    annotations, report = merge_screening_ratings(
-        _read_jsonl(Path(args.rollouts)),
-        ratings,
-        min_independent_raters=args.min_independent_raters,
+    annotations, report = build_reference_annotations(
+        _read_jsonl(Path(args.rollouts))
     )
-    if report["status"] != "pass":
-        raise ValueError("No rollout passed independent benign screening")
     _atomic_jsonl(Path(args.output_annotations), annotations)
     _atomic_json(Path(args.report), report)
     print(json.dumps(report, indent=2, sort_keys=True))

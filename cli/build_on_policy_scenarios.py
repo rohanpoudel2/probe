@@ -43,10 +43,8 @@ def _hashed_split(group_id: str, seed: int = 42) -> str:
         hashlib.sha256(f"{seed}:{group_id}".encode("utf-8")).hexdigest()[:16], 16
     )
     fraction = value / float(16**16)
-    if fraction < 0.7:
-        return "train"
     if fraction < 0.8:
-        return "calibration"
+        return "train"
     if fraction < 0.9:
         return "eval"
     return "test"
@@ -59,11 +57,9 @@ def _upstream_split(filename: str, group_id: str, seed: int) -> str:
     if stem.endswith("_eval") or stem.endswith("_validation"):
         return "eval"
     if stem.endswith("_train") or "source_train" in stem:
-        # Hold out part of upstream training only for pilot calibration. A final
-        # study must point thresholding at a dedicated benign dataset.
-        return (
-            "calibration" if _hashed_split(group_id, seed) == "calibration" else "train"
-        )
+        # Hold out part of upstream training for source-task model selection.
+        # Operational alert calibration always uses separate reference traffic.
+        return "eval" if _hashed_split(group_id, seed) == "eval" else "train"
     return _hashed_split(group_id, seed)
 
 
@@ -230,7 +226,7 @@ def build_honesty_control_scenarios(
                         "behavior": "honesty_control",
                         "domain": split_name,
                         "template": "neutral_vs_pressure_prompt_pairing_v1",
-                        "paraphrase": "original",
+                        "presentation": "plain",
                         "obfuscation": "none",
                     },
                 ),
@@ -315,7 +311,7 @@ def build_sycophancy_scenarios(
                         "behavior": "sycophancy",
                         "domain": "sycophancy_eval",
                         "template": file_key,
-                        "paraphrase": "original",
+                        "presentation": "plain",
                         "obfuscation": "none",
                     },
                 ),
@@ -411,7 +407,7 @@ def build_motivated_reasoning_scenarios(
                         "behavior": "motivated_reasoning",
                         "domain": source_name,
                         "template": "motivated_mcq_bias_v1",
-                        "paraphrase": "original",
+                        "presentation": "plain",
                         "obfuscation": "none",
                     },
                 ),

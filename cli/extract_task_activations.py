@@ -6,10 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import List
 
-from data.group_splitting import (
-    declared_protocol_split,
-    grouped_train_calibration_eval_test_split,
-)
+from data.group_splitting import declared_protocol_split
 from extraction.task_extractor import TaskActivationExtractor, TaskExtractionConfig
 from tasks import TASK_REGISTRY
 
@@ -81,24 +78,11 @@ def main() -> None:
         action="store_true",
         help="Permit authored fixtures in an explicitly non-confirmatory debug run.",
     )
-    parser.add_argument("--train_frac", type=float, default=0.7)
-    parser.add_argument("--calibration_frac", type=float, default=0.1)
-    parser.add_argument("--eval_frac", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--calibration_only",
-        action="store_true",
-        help="Extract the entire supplied benign dataset as the calibration split.",
-    )
     parser.add_argument(
         "--allow_dirty_code",
         action="store_true",
-        help="Permit a dirty Git worktree for an explicitly non-final pilot.",
-    )
-    parser.add_argument(
-        "--allow_derived_splits",
-        action="store_true",
-        help="Derive splits for a non-final pilot when records lack protocol_split.",
+        help="Permit a dirty Git worktree for an explicitly non-confirmatory debug run.",
     )
     parser.add_argument(
         "--device",
@@ -113,31 +97,13 @@ def main() -> None:
     code_revision, code_dirty = _git_state()
     if code_dirty and not args.allow_dirty_code:
         raise RuntimeError(
-            "Refusing extraction from a dirty worktree; commit the protocol or pass --allow_dirty_code for a non-final pilot"
+            "Refusing extraction from a dirty worktree; commit the protocol or "
+            "pass --allow_dirty_code for a non-confirmatory debug run"
         )
     examples = task.load(args.data)
-    if args.calibration_only:
-        if any(example.label != 0 for example in examples):
-            raise ValueError(
-                "--calibration_only requires an all-negative benign dataset"
-            )
-        splits = {"calibration": examples}
-    else:
-        try:
-            splits = declared_protocol_split(
-                examples, group_key=task.spec.grouped_split_key
-            )
-        except ValueError:
-            if not args.allow_derived_splits:
-                raise
-            splits = grouped_train_calibration_eval_test_split(
-                examples,
-                group_key=task.spec.grouped_split_key,
-                train_frac=args.train_frac,
-                calibration_frac=args.calibration_frac,
-                eval_frac=args.eval_frac,
-                seed=args.seed,
-            )
+    splits = declared_protocol_split(
+        examples, group_key=task.spec.grouped_split_key
+    )
 
     extractor = TaskActivationExtractor(
         TaskExtractionConfig(

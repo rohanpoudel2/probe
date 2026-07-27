@@ -165,13 +165,13 @@ def main() -> None:
     parser.add_argument(
         "--allow_dirty_code",
         action="store_true",
-        help="Permit generation from a dirty worktree for an explicitly non-final pilot.",
+        help="Permit generation from a dirty worktree for an explicitly non-confirmatory debug run.",
     )
     parser.add_argument(
         "--no_thinking",
         action="store_true",
         help="Disable the model's reasoning trace (enable_thinking=False) for a faster "
-             "answer-view pilot. Non-final; the reasoning view is unavailable in this mode.",
+             "answer-view debug run. Non-confirmatory; the reasoning view is unavailable in this mode.",
     )
     args = parser.parse_args()
 
@@ -205,7 +205,8 @@ def main() -> None:
         raise RuntimeError("Rollout generation requires Git provenance")
     if git["code_dirty"] and not args.allow_dirty_code:
         raise RuntimeError(
-            "Refusing generation from a dirty worktree; commit the protocol or pass --allow_dirty_code for a non-final pilot"
+            "Refusing generation from a dirty worktree; commit the protocol or "
+            "pass --allow_dirty_code for a non-confirmatory debug run"
         )
 
     tokenizer_revision = args.tokenizer_revision or args.model_revision
@@ -214,17 +215,21 @@ def main() -> None:
         raise ValueError(f"Tokenizer for {args.model} has no chat template")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    from cli.common import inference_dtype_for_device
+
     resolved_device = resolve_torch_device(args.device)
-    model_kwargs = {"revision": args.model_revision, "torch_dtype": "auto"}
-    if resolved_device == "auto":
-        model_kwargs["device_map"] = "auto"
+    model_kwargs = {
+        "revision": args.model_revision,
+        "torch_dtype": inference_dtype_for_device(resolved_device),
+        "low_cpu_mem_usage": True,
+    }
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         **model_kwargs,
     )
-    if resolved_device != "auto":
-        model = model.to(resolved_device)
+    model = model.to(resolved_device)
     model.eval()
+    model.requires_grad_(False)
     model_device = next(model.parameters()).device
     chat_template_hash = content_hash(tokenizer.chat_template)
     generation_spec = {
@@ -280,7 +285,7 @@ def main() -> None:
                     kwargs.update(
                         {"temperature": args.temperature, "top_p": args.top_p}
                     )
-                with torch.no_grad():
+                with torch.inference_mode():
                     generated = model.generate(**encoded, **kwargs)
                 prompt_length = int(encoded["input_ids"].shape[1])
                 response_ids = generated.sequences[0, prompt_length:]

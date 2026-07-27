@@ -97,6 +97,10 @@ def test_judge_cache_is_context_bound(tmp_path) -> None:
         "schema_version": LLM_JUDGE_CACHE_SCHEMA_VERSION,
         "context_hash": context_hash,
         "code_dirty": False,
+        "judge_requested_batch_size": 8,
+        "judge_effective_batch_size": 8,
+        "judge_resolved_device": "cpu",
+        "judge_model_parameter_dtype": "torch.float32",
     }
     path = tmp_path / "judge.npz"
     atomic_save_judge_cache(path, _scored(), metadata)

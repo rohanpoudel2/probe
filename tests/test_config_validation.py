@@ -1,8 +1,10 @@
 import pytest
 import numpy as np
+import yaml
 from pathlib import Path
 
 from cli.validate_multimodel_config import (
+    _validate_frozen_artifact_provenance,
     _validate_feature_directory,
     validate_config,
 )
@@ -11,15 +13,30 @@ from cli.validate_multimodel_config import (
 def _config():
     return {
         "protocol_version": "frontier-v1",
-        "protocol_stage": "pilot",
+        "protocol_stage": "selection",
+        "execution_mode": "selection",
         "results_dir": "results",
-        "max_fpr": 0.01,
-        "min_calibration_negatives": 1000,
+        "views": "answer",
+        "layers": "all",
+        "probes": "P1_logistic",
+        "max_reference_alert_rate": 0.01,
+        "min_reference_groups": 1000,
         "k_values": "1,4,8",
+        "selection_k": 8,
         "seeds": 10,
         "balance_modes": "balanced",
+        "bootstrap_samples": 1000,
+        "run_black_box_baselines": False,
         "run_falsification_suite": False,
         "falsification_registry": "experiments/protocol/falsification_registry.yaml",
+        "claim_gates": {
+            "primary_effect": "white_box_minus_selected_black_box_tpr",
+            "reference_holdout_check": "selected_system_interval_not_above_budget_v1",
+            "hard_negative_check": "fpr_noninferiority_and_pairwise_ordering_v1",
+            "hard_negative_fpr_noninferiority_margin": 0.01,
+            "pairwise_order_accuracy_floor": 0.5,
+            "multiplicity_control": "holm_global",
+        },
         "task_pairs": [{"source_task": "a", "target_task": "b"}],
         "models": [
             {
@@ -28,20 +45,32 @@ def _config():
                 "model_revision": "abcdef1234567",
                 "family": "family-a",
                 "feature_dirs": {"a": "features/a", "b": "features/b"},
+                "reference_feature_dir": "features/reference",
             }
         ],
     }
 
 
-def test_pilot_config_accepts_pinned_model() -> None:
+def test_selection_config_accepts_pinned_model() -> None:
     validate_config(_config(), check_paths=False, final_protocol=False)
 
 
 def test_final_config_requires_three_families_and_preregistration() -> None:
     config = _config()
     config["protocol_stage"] = "frozen"
-    config["min_calibration_negatives"] = 10_000
+    config["execution_mode"] = "confirmatory"
+    config["min_reference_groups"] = 10_000
     config["k_values"] = "1,2,4,8,16,32"
+    config["reference_traffic_protocol"] = {
+        "protocol": "reference-traffic-v1",
+        "scope": "per_monitored_model_revision",
+        "calibration_method": "split_conformal_upper_tail_v1",
+        "max_reference_alert_rate": 0.01,
+        "selection_seed": 9173,
+        "calibration_groups": 10_000,
+        "holdout_groups": 10_000,
+        "semantic_labels": False,
+    }
     with pytest.raises(ValueError, match="three genuinely different"):
         validate_config(config, check_paths=False, final_protocol=True)
 
@@ -53,7 +82,7 @@ def test_moving_model_revision_is_rejected() -> None:
         validate_config(config, check_paths=False, final_protocol=False)
 
 
-def test_pilot_validates_the_registered_embedding_lock() -> None:
+def test_selection_validates_the_registered_embedding_lock() -> None:
     config = _config()
     config["text_embedding_model_lock"] = (
         "experiments/baselines/text_embedding_models.yaml"
@@ -67,32 +96,99 @@ def test_pilot_validates_the_registered_embedding_lock() -> None:
     validate_config(config, check_paths=False, final_protocol=False)
 
 
-def test_pilot_validates_the_registered_benign_audit_protocol() -> None:
+def test_selection_validates_the_registered_reference_protocol() -> None:
     config = _config()
-    config["models"][0]["family"] = "Qwen3"
-    config["benign_screening_audit"] = {
-        "protocol": "benign-screening-audit-v1",
+    config["reference_traffic_protocol"] = {
+        "protocol": "reference-traffic-v1",
         "scope": "per_monitored_model_revision",
-        "screener_model_lock": "experiments/baselines/benign_screening_models.yaml",
-        "screener_model_keys_by_monitored_family": {
-            "Qwen3": [
-                "phi4_mini_benign",
-                "olmo2_1b_benign",
-                "granite_2b_benign",
-            ]
-        },
-        "min_screeners": 3,
-        "random_audit_size": 300,
-        "risk_audit_size": 0,
+        "calibration_method": "split_conformal_upper_tail_v1",
+        "max_reference_alert_rate": 0.01,
         "selection_seed": 9173,
-        "confidence_level": 0.95,
-        "max_false_acceptance_rate": 0.01,
+        "calibration_groups": 1000,
+        "holdout_groups": 1000,
+        "semantic_labels": False,
     }
     validate_config(config, check_paths=False, final_protocol=False)
 
-    config["benign_screening_audit"]["random_audit_size"] = 299
-    with pytest.raises(ValueError, match="at least 300"):
+    config["reference_traffic_protocol"]["holdout_groups"] = 0
+    with pytest.raises(ValueError, match="untouched holdout"):
         validate_config(config, check_paths=False, final_protocol=False)
+
+
+def test_protocol_stage_and_execution_mode_cannot_diverge() -> None:
+    config = _config()
+    config["execution_mode"] = "confirmatory"
+    with pytest.raises(ValueError, match="requires execution_mode=selection"):
+        validate_config(config, check_paths=False, final_protocol=False)
+
+
+def test_frozen_artifact_provenance_rejects_comparison_tampering(
+    tmp_path: Path,
+) -> None:
+    registry_sha256 = "a" * 64
+    provenance = {
+        "selection_file": "results/selection/task_primary_source_systems.csv",
+        "selection_file_sha256": "b" * 64,
+        "base_config_sha256": "c" * 64,
+        "selection_k": 8,
+        "registry_sha256": registry_sha256,
+    }
+    primary = {
+        "schema_version": "primary-v1",
+        "selection_provenance": provenance,
+        "comparisons": [],
+    }
+    falsification = {
+        "schema_version": "falsification-v1",
+        "selection_provenance": provenance,
+        "comparisons": [],
+    }
+    primary_path = tmp_path / "primary.yaml"
+    falsification_path = tmp_path / "falsification.yaml"
+    primary_path.write_text(
+        yaml.safe_dump(primary, sort_keys=False),
+        encoding="utf-8",
+    )
+    falsification_path.write_text(
+        yaml.safe_dump(falsification, sort_keys=False),
+        encoding="utf-8",
+    )
+    import hashlib
+
+    cfg = {
+        "selection_k": 8,
+        "selection_provenance": provenance,
+        "registered_artifact_sha256": {
+            "comparisons_file": hashlib.sha256(
+                primary_path.read_bytes()
+            ).hexdigest(),
+            "falsification_comparisons_file": hashlib.sha256(
+                falsification_path.read_bytes()
+            ).hexdigest(),
+        },
+    }
+    _validate_frozen_artifact_provenance(
+        cfg,
+        registry_sha256=registry_sha256,
+        comparisons_path=primary_path,
+        comparisons_config=primary,
+        falsification_comparisons_path=falsification_path,
+        falsification_comparisons_config=falsification,
+    )
+
+    primary_path.write_text(
+        primary_path.read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="manifest hashes"):
+        _validate_frozen_artifact_provenance(
+            cfg,
+            registry_sha256=registry_sha256,
+            comparisons_path=primary_path,
+            comparisons_config=primary,
+            falsification_comparisons_path=falsification_path,
+            falsification_comparisons_config=falsification,
+        )
 
 
 def test_black_box_execution_requires_complete_inputs() -> None:
@@ -146,6 +242,7 @@ def _write_feature_bundle(
         "question_ids": np.asarray(question_ids),
         "model_name": np.asarray("org/model"),
         "model_revision": np.asarray("a" * 40),
+        "tokenizer_revision": np.asarray("a" * 40),
         "feature_schema_version": np.asarray(schema_version),
         "dataset_sha256": np.asarray("b" * 64),
         "code_revision": np.asarray("c" * 40),
@@ -237,4 +334,49 @@ def test_feature_validation_requires_identical_examples_across_layers(
     with pytest.raises(ValueError, match="disagrees with other train layer bundles"):
         _validate_feature_directory(
             directory, model, "task", 1, ("train",), final_protocol=True
+        )
+
+
+def test_feature_validation_requires_manifest_activation_views(
+    tmp_path: Path,
+) -> None:
+    model = {
+        "name": "model",
+        "model_id": "org/model",
+        "model_revision": "a" * 40,
+    }
+    directory = tmp_path / "features"
+    _write_feature_bundle(directory, schema_version="3")
+    with pytest.raises(ValueError, match="lacks requested activation views"):
+        _validate_feature_directory(
+            directory,
+            model,
+            "task",
+            1,
+            ("train",),
+            final_protocol=True,
+            required_views=("answer", "full_text"),
+        )
+
+
+def test_feature_validation_rejects_stale_dataset_hash(
+    tmp_path: Path,
+) -> None:
+    model = {
+        "name": "model",
+        "model_id": "org/model",
+        "model_revision": "a" * 40,
+    }
+    directory = tmp_path / "features"
+    _write_feature_bundle(directory, schema_version="3")
+    with pytest.raises(ValueError, match="different labeled dataset"):
+        _validate_feature_directory(
+            directory,
+            model,
+            "task",
+            1,
+            ("train",),
+            final_protocol=True,
+            required_views=("answer",),
+            expected_dataset_sha256="f" * 64,
         )

@@ -89,6 +89,10 @@ def load_text_embedding_cache(
             "max_length",
             "instruction",
             "instruction_format",
+            "requested_batch_size",
+            "effective_batch_size",
+            "resolved_device",
+            "model_parameter_dtype",
             "monitored_model_id",
             "monitored_model_revision",
             "monitored_tokenizer_revision",
@@ -143,6 +147,25 @@ def load_text_embedding_cache(
             raise ValueError(f"Text embedding cache {path} has invalid {key}")
     if require_clean_code and bool(metadata["code_dirty"]):
         raise ValueError(f"Text embedding cache {path} was produced from a dirty worktree")
+    requested_batch_size = int(metadata["requested_batch_size"])
+    effective_batch_size = int(metadata["effective_batch_size"])
+    if (
+        requested_batch_size < 1
+        or effective_batch_size < 1
+        or effective_batch_size > requested_batch_size
+    ):
+        raise ValueError(f"Text embedding cache {path} has invalid batch provenance")
+    if (
+        str(metadata["resolved_device"]) == "mps"
+        and effective_batch_size != 1
+    ):
+        raise ValueError(
+            f"Text embedding cache {path} violates the MPS batch-size cap"
+        )
+    if not str(metadata["model_parameter_dtype"]).strip():
+        raise ValueError(
+            f"Text embedding cache {path} lacks model dtype provenance"
+        )
     if bool(metadata["normalized"]):
         norms = np.linalg.norm(embeddings, axis=1)
         if not np.allclose(norms, 1.0, atol=2e-4, rtol=2e-4):

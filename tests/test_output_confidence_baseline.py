@@ -47,8 +47,8 @@ def test_output_confidence_runner_writes_metrics_and_predictions(
 ) -> None:
     source_path = tmp_path / "source.jsonl"
     target_path = tmp_path / "target.jsonl"
-    calibration_path = tmp_path / "calibration.jsonl"
-    for path in (source_path, target_path, calibration_path):
+    reference_path = tmp_path / "reference.jsonl"
+    for path in (source_path, target_path, reference_path):
         path.write_text("fixture\n", encoding="utf-8")
     datasets = {
         str(source_path): [
@@ -63,9 +63,11 @@ def test_output_confidence_runner_writes_metrics_and_predictions(
             _example("target-pos", "target", "test", 1),
             _example("target-neg", "target", "test", 0),
         ],
-        str(calibration_path): [
+        str(reference_path): [
             _example("cal-0", "cal-0", "calibration", 0),
             _example("cal-1", "cal-1", "calibration", 0),
+            _example("holdout-0", "holdout-0", "test", 0),
+            _example("holdout-1", "holdout-1", "test", 0),
         ],
     }
 
@@ -82,7 +84,7 @@ def test_output_confidence_runner_writes_metrics_and_predictions(
         {
             "source": FixtureTask,
             "target": FixtureTask,
-            "benign_calibration": FixtureTask,
+            "reference_traffic": FixtureTask,
         },
     )
     results_dir = tmp_path / "results"
@@ -99,10 +101,10 @@ def test_output_confidence_runner_writes_metrics_and_predictions(
             "target",
             "--target_data",
             str(target_path),
-            "--calibration_task",
-            "benign_calibration",
-            "--calibration_data",
-            str(calibration_path),
+            "--reference_task",
+            "reference_traffic",
+            "--reference_data",
+            str(reference_path),
             "--model",
             "monitored",
             "--results_dir",
@@ -111,8 +113,10 @@ def test_output_confidence_runner_writes_metrics_and_predictions(
             "1",
             "--seeds",
             "1",
-            "--min_calibration_negatives",
+            "--min_reference_groups",
             "2",
+            "--max_reference_alert_rate",
+            "0.5",
         ],
     )
 
@@ -121,6 +125,7 @@ def test_output_confidence_runner_writes_metrics_and_predictions(
     output = results_dir / "source__to__target__output_confidence_baselines.jsonl"
     row = json.loads(output.read_text(encoding="utf-8").strip())
     assert row["probe"] == "B4_output_confidence_logistic"
-    assert row["threshold_source"] == "source_calibration_negatives"
-    assert row["transfer_recall_at_frozen_fpr"] == 1.0
+    assert row["threshold_source"] == "unlabeled_reference_traffic"
+    assert row["reference_holdout_alert_rate"] == 0.0
+    assert row["transfer_tpr_at_reference_alert_budget"] == 1.0
     assert list((results_dir / "predictions").glob("*.jsonl"))

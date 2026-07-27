@@ -23,7 +23,8 @@ def _latex_from_csv(csv_path: Path, tex_path: Path, nrows: int | None = None) ->
     if nrows is not None:
         df = df.head(nrows)
     tex_path.write_text(
-        df.to_latex(index=False, escape=False, float_format=lambda x: f"{x:.3f}")
+        df.to_latex(index=False, escape=False, float_format=lambda x: f"{x:.3f}"),
+        encoding="utf-8",
     )
 
 
@@ -47,6 +48,10 @@ def main() -> None:
     notes.mkdir(parents=True, exist_ok=True)
 
     csvs = [
+        "claim_main_table.csv",
+        "claim_supporting_table.csv",
+        "task_primary_source_systems.csv",
+        "task_primary_transfer_report.csv",
         "task_cross_model_table.csv",
         "task_cross_task_transfer.csv",
         "task_same_task_calibration.csv",
@@ -58,6 +63,7 @@ def main() -> None:
         "task_direction_alignment.csv",
         "negative_control_report.csv",
         "sanity_checks.csv",
+        "claim_gate_status.csv",
         "ablation_summary.csv",
     ]
     for name in csvs:
@@ -82,6 +88,13 @@ def main() -> None:
             provenance / "falsification_manifests",
             dirs_exist_ok=True,
         )
+    protocol_artifacts = results_dir / "protocol_artifacts"
+    if protocol_artifacts.exists():
+        shutil.copytree(
+            protocol_artifacts,
+            provenance / "protocol_artifacts",
+            dirs_exist_ok=True,
+        )
 
     for name in [
         "cross_model_transfer.png",
@@ -94,25 +107,29 @@ def main() -> None:
         "Validated result artifact bundle",
         "",
         "Primary result tables:",
-        "1. task_cross_model_table.tex",
+        "1. claim_main_table.tex",
         "2. task_cross_task_transfer.tex",
-        "3. sanity_checks.tex",
-        "4. falsification_slices.tex",
-        "5. falsification_significance.tex",
+        "3. task_significance.tex",
+        "4. falsification_significance.tex",
+        "5. claim_gate_status.tex",
         "",
-        "Supplementary result tables:",
-        "1. task_significance.tex",
-        "2. task_geometry_summary.tex",
-        "3. negative_control_report.tex",
-        "4. ablation_summary.tex",
-        "5. falsification shift/pair predictions and frozen manifests (provenance/)",
+        "Supporting result tables:",
+        "1. claim_supporting_table.tex",
+        "2. task_cross_model_table.tex",
+        "3. task_geometry_summary.tex",
+        "4. negative_control_report.tex",
+        "5. ablation_summary.tex",
+        "6. falsification evidence and immutable protocol artifacts (provenance/)",
         "",
         "Result figures:",
         "1. cross_model_transfer.png",
         "2. label_budget_scaling.png",
         "3. task_transfer_matrix.png",
     ]
-    (notes / "result_artifact_manifest.md").write_text("\n".join(manifest_lines))
+    (notes / "result_artifact_manifest.md").write_text(
+        "\n".join(manifest_lines),
+        encoding="utf-8",
+    )
     print(f"packaged result artifacts under {out_root}")
 
 

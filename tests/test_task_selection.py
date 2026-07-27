@@ -23,7 +23,7 @@ def test_layer_view_is_selected_at_fixed_k_and_reused_across_k_and_targets() -> 
                         "layer": 1,
                         "view": "answer",
                         "k": k,
-                        "eval_recall_at_frozen_fpr_mean": 0.9 if k == 1 else 0.2,
+                        "eval_tpr_at_reference_alert_budget_mean": 0.9 if k == 1 else 0.2,
                     },
                     {
                         "model": "m",
@@ -34,7 +34,7 @@ def test_layer_view_is_selected_at_fixed_k_and_reused_across_k_and_targets() -> 
                         "layer": 2,
                         "view": "answer",
                         "k": k,
-                        "eval_recall_at_frozen_fpr_mean": 0.1 if k == 1 else 0.8,
+                        "eval_tpr_at_reference_alert_budget_mean": 0.1 if k == 1 else 0.8,
                     },
                 ]
             )
@@ -67,10 +67,10 @@ def test_primary_selection_jointly_freezes_family_layer_and_view() -> None:
                     "layer": layer,
                     "view": view,
                     "k": 8,
-                    "eval_recall_at_frozen_fpr_mean": source_score,
+                    "eval_tpr_at_reference_alert_budget_mean": source_score,
                     # Deliberately favors P1 on a target; primary selection
                     # must never inspect this column.
-                    "transfer_recall_at_1pct_fpr_mean": (
+                    "transfer_tpr_at_1pct_reference_alert_budget_mean": (
                         transfer_bonus if probe == "P1_logistic" else 0.0
                     ),
                 }
@@ -104,7 +104,7 @@ def test_primary_selection_uses_deterministic_tie_break() -> None:
                 "layer": layer,
                 "view": "answer",
                 "k": 4,
-                "eval_recall_at_frozen_fpr_mean": 0.5,
+                "eval_tpr_at_reference_alert_budget_mean": 0.5,
             }
             for probe, layer in (
                 ("P2_mass_mean", 2),
@@ -133,7 +133,7 @@ def test_primary_selection_requires_chosen_budget_for_every_access_regime() -> N
                 "layer": 1,
                 "view": "answer",
                 "k": 8,
-                "eval_recall_at_frozen_fpr_mean": 0.5,
+                "eval_tpr_at_reference_alert_budget_mean": 0.5,
             },
             {
                 "model": "m",
@@ -144,7 +144,7 @@ def test_primary_selection_requires_chosen_budget_for_every_access_regime() -> N
                 "layer": -1,
                 "view": "answer_text",
                 "k": 4,
-                "eval_recall_at_frozen_fpr_mean": 0.5,
+                "eval_tpr_at_reference_alert_budget_mean": 0.5,
             },
         ]
     )
@@ -167,7 +167,7 @@ def test_primary_selection_requires_finite_metric_per_access_regime(
                 "layer": layer,
                 "view": view,
                 "k": 8,
-                "eval_recall_at_frozen_fpr_mean": score,
+                "eval_tpr_at_reference_alert_budget_mean": score,
             }
             for probe, layer, view, score in (
                 ("P1_logistic", 1, "answer", 0.5),

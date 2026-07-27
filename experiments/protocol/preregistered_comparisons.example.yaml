@@ -3,7 +3,7 @@
 comparisons:
   - comparison_id: primary_white_box_gain_qwen3_4b_k8
     comparison_role: primary_white_box_gain
-    description: Activation monitor improves frozen-threshold target TPR over the source-eval-selected registered black-box monitor.
+    description: Activation monitor improves target TPR at the frozen reference-traffic alert budget over the source-eval-selected black-box monitor.
     common_filters:
       model: Qwen3-4B
       source_task: sycophancy

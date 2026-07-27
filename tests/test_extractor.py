@@ -91,7 +91,7 @@ def test_chat_spans_locate_exact_assistant_answer() -> None:
 
 
 def test_layer_numbers_are_transformer_block_indices() -> None:
-    result = _extractor().extract_example(_example())
+    result, _ = _extractor().extract_example_with_metadata(_example())
     assert np.all(result[0]["answer"] == 1.0)
     assert np.all(result[1]["answer"] == 2.0)
 

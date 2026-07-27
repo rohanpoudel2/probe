@@ -1,4 +1,4 @@
-# Exact upstream dataset sources used for the publication study plan.
+# Exact upstream dataset sources used for the frozen study protocol.
 # This file is a source lock, not a directly runnable normalization manifest.
 # Use it to pin the authoritative Hugging Face repos / revisions before you
 # build the final task-family JSONL files consumed by the benchmark pipeline.
@@ -85,6 +85,17 @@ sources:
         - statistics
       hf_split: test
 
+  reference_traffic_raw:
+    notes:
+      - WildChat is used only as unlabeled reference-distribution traffic.
+      - Upstream moderation and language fields are source filters, not semantic labels.
+      - Each monitored model generates one on-policy response per selected prompt.
+    dataset:
+      repo: allenai/WildChat-1M
+      revision: "7d6490e462285cf85d91eabea0f9a954fbddcd1f"
+      split: train
+      raw_candidate_rows: 50000
+
   cot_monitorability_raw:
     notes:
       - No verified official Hugging Face dataset path for MonitorBench was found during source locking.
@@ -92,5 +103,8 @@ sources:
     monitorbench:
       status: no_verified_huggingface_dataset_found
       github_repo: https://github.com/ASTRAL-Group/MonitorBench
-      github_zip: https://github.com/ASTRAL-Group/MonitorBench/archive/refs/heads/main.zip
+      revision: 43dda5994bfb16d34b1c30d4b3482d78a714e640
+      github_zip: https://github.com/ASTRAL-Group/MonitorBench/archive/43dda5994bfb16d34b1c30d4b3482d78a714e640.zip
+      sha256: fba6b9d5aa4f4b3f5fe864a77b47346523f27bf16b20a1ecf880559947ed6f46
+      adapter_contract: experiments/protocol/monitorbench_adapter.yaml
       source_reference: https://arxiv.org/abs/2603.28590

@@ -217,7 +217,7 @@ def main() -> None:
     if code_dirty and not args.allow_dirty_code:
         raise RuntimeError(
             "Refusing text embedding extraction from a dirty worktree; commit the protocol "
-            "or pass --allow_dirty_code for a non-final pilot"
+            "or pass --allow_dirty_code for a non-confirmatory debug run"
         )
 
     task = TASK_REGISTRY[args.task]()
@@ -235,7 +235,11 @@ def main() -> None:
         raise ValueError(f"Dataset contains invalid protocol splits: {sorted(split_values)}")
 
     from transformers import AutoModel, AutoTokenizer
-    from cli.common import resolve_torch_device
+    from cli.common import (
+        bounded_batch_size_for_device,
+        inference_dtype_for_device,
+        resolve_torch_device,
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(
         spec["model_id"],
@@ -247,19 +251,22 @@ def main() -> None:
             raise ValueError("Embedding tokenizer has neither pad_token nor eos_token")
         tokenizer.pad_token = tokenizer.eos_token
     resolved_device = resolve_torch_device(args.device)
+    effective_batch_size = bounded_batch_size_for_device(
+        args.batch_size,
+        resolved_device,
+    )
     model_kwargs = {
         "revision": spec["model_revision"],
-        "torch_dtype": "auto",
+        "torch_dtype": inference_dtype_for_device(resolved_device),
+        "low_cpu_mem_usage": True,
     }
-    if resolved_device == "auto":
-        model_kwargs["device_map"] = "auto"
     model = AutoModel.from_pretrained(
         spec["model_id"],
         **model_kwargs,
     )
-    if resolved_device != "auto":
-        model = model.to(resolved_device)
+    model = model.to(resolved_device)
     model.eval()
+    model.requires_grad_(False)
 
     output_dir = Path(args.output_dir)
     completed = 0
@@ -275,7 +282,7 @@ def main() -> None:
             tokenizer=tokenizer,
             model=model,
             spec=spec,
-            batch_size=args.batch_size,
+            batch_size=effective_batch_size,
             allow_truncation=args.allow_truncation,
         )
         arrays.update(
@@ -317,6 +324,10 @@ def main() -> None:
             "max_length": int(spec["max_length"]),
             "instruction": spec["instruction"],
             "instruction_format": spec["instruction_format"],
+            "requested_batch_size": int(args.batch_size),
+            "effective_batch_size": int(effective_batch_size),
+            "resolved_device": resolved_device,
+            "model_parameter_dtype": str(next(model.parameters()).dtype),
             **identity,
         }
         atomic_save_text_embedding_cache(output_path, arrays=arrays, metadata=metadata)

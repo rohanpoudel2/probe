@@ -2,72 +2,59 @@ import numpy as np
 import pytest
 
 from evaluation.metrics import (
+    alert_rate_summary,
+    conformal_alert_p_values,
     compute_brier_score,
-    compute_fpr_at_threshold,
-    compute_recall_at_threshold,
-    paired_group_bootstrap_metric_diff,
-    require_independent_calibration_negatives,
-    select_threshold_at_fpr,
+    require_disjoint_reference_groups,
+    require_independent_reference_groups,
+    select_threshold_at_alert_rate,
     wilson_interval,
 )
 
 
-def test_frozen_threshold_uses_negative_calibration_scores_only() -> None:
-    labels = np.asarray([0] * 100 + [1] * 3)
-    negative_scores = np.linspace(0.0, 0.99, 100)
-    scores = np.concatenate([negative_scores, np.asarray([-100.0, 50.0, 100.0])])
-    threshold = select_threshold_at_fpr(labels, scores, max_fpr=0.01, min_negatives=100)
-    assert compute_fpr_at_threshold(labels, scores, threshold) <= 0.01
-    changed_positive_scores = np.concatenate([negative_scores, np.asarray([1e9, 1e9, 1e9])])
-    assert select_threshold_at_fpr(
-        labels, changed_positive_scores, max_fpr=0.01, min_negatives=100
-    ) == threshold
-
-
-def test_threshold_ties_are_conservative() -> None:
-    labels = np.zeros(100, dtype=int)
-    scores = np.asarray([1.0] * 2 + [0.0] * 98)
-    threshold = select_threshold_at_fpr(labels, scores, max_fpr=0.01, min_negatives=100)
-    assert threshold > 1.0
-    assert compute_fpr_at_threshold(labels, scores, threshold) == 0.0
-
-
-def test_repeated_rollouts_do_not_inflate_calibration_sample_size() -> None:
-    labels = np.zeros(100, dtype=int)
-    repeated_groups = np.repeat([f"q{i}" for i in range(10)], 10)
-    with pytest.raises(ValueError, match="one negative observation per independent"):
-        require_independent_calibration_negatives(
-            labels, repeated_groups, min_negative_groups=100
+def test_split_conformal_threshold_and_p_values_are_conservative() -> None:
+    reference = np.linspace(0.0, 0.9999, 10_000)
+    threshold = select_threshold_at_alert_rate(
+        reference, max_alert_rate=0.01, min_reference=10_000
+    )
+    p_values = conformal_alert_p_values(
+        reference, np.asarray([threshold, reference.max(), reference.max() + 1.0])
+    )
+    assert threshold > reference[-100]
+    assert p_values[0] <= 0.01
+    assert p_values[1] < p_values[0]
+    assert p_values[2] == pytest.approx(1 / 10_001)
+    assert np.isinf(
+        select_threshold_at_alert_rate(
+            np.asarray([0.1, 0.2]), max_alert_rate=0.01, min_reference=2
         )
+    )
+
+
+def test_reference_partitions_require_unique_disjoint_groups() -> None:
+    calibration = np.asarray([f"cal-{index}" for index in range(100)])
+    holdout = np.asarray([f"holdout-{index}" for index in range(100)])
     assert (
-        require_independent_calibration_negatives(
-            labels, np.asarray([f"q{i}" for i in range(100)]), min_negative_groups=100
+        require_independent_reference_groups(
+            calibration, min_reference_groups=100
         )
         == 100
     )
+    require_disjoint_reference_groups(calibration, holdout)
+    with pytest.raises(ValueError, match="group-disjoint"):
+        require_disjoint_reference_groups(calibration, np.asarray(["cal-0"]))
+
+
+def test_holdout_alert_rate_summary_reports_wilson_interval() -> None:
+    summary = alert_rate_summary(np.asarray([0.0] * 99 + [1.0]), 0.5)
+    assert summary["alerts"] == 1
+    assert summary["rate"] == 0.01
+    assert summary["ci_low"] < 0.01 < summary["ci_high"]
 
 
 def test_probability_metrics_reject_raw_scores() -> None:
     with pytest.raises(ValueError, match="probability"):
         compute_brier_score(np.asarray([0, 1]), np.asarray([-2.0, 3.0]))
-
-
-def test_grouped_bootstrap_preserves_pairing() -> None:
-    labels = np.tile([0, 1], 8)
-    groups = np.repeat([f"q{i}" for i in range(8)], 2)
-    good = labels.astype(float)
-    bad = 1.0 - good
-    result = paired_group_bootstrap_metric_diff(
-        labels,
-        good,
-        bad,
-        groups,
-        lambda y, scores: compute_recall_at_threshold(y, scores, 0.5),
-        n_boot=100,
-        seed=3,
-    )
-    assert result["mean_diff"] == 1.0
-    assert result["ci_low"] == 1.0
 
 
 def test_wilson_interval_bounds_observation() -> None:

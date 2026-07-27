@@ -15,5 +15,10 @@ def collect_results(results_dir: str) -> pd.DataFrame:
         with open(f, encoding="utf-8") as fh:
             for line in fh:
                 if line.strip():
-                    rows.append(json.loads(line))
+                    row = json.loads(line)
+                    # Root-level falsification evidence is also JSONL but is not
+                    # a run summary. Maintained monitor runners always emit this
+                    # explicit identity/status contract.
+                    if all(key in row for key in ("run_id", "probe", "status")):
+                        rows.append(row)
     return pd.DataFrame(rows)

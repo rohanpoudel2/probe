@@ -124,6 +124,32 @@ def load_judge_cache(
 
     if metadata.get("schema_version") != LLM_JUDGE_CACHE_SCHEMA_VERSION:
         raise ValueError(f"Unsupported judge cache schema in {path}")
+    runtime_fields = (
+        "judge_requested_batch_size",
+        "judge_effective_batch_size",
+        "judge_resolved_device",
+        "judge_model_parameter_dtype",
+    )
+    missing_runtime = [key for key in runtime_fields if key not in metadata]
+    if missing_runtime:
+        raise ValueError(
+            f"Judge cache {path} lacks runtime provenance {missing_runtime}"
+        )
+    requested_batch_size = int(metadata["judge_requested_batch_size"])
+    effective_batch_size = int(metadata["judge_effective_batch_size"])
+    if (
+        requested_batch_size < 1
+        or effective_batch_size < 1
+        or effective_batch_size > requested_batch_size
+    ):
+        raise ValueError(f"Judge cache {path} has invalid batch provenance")
+    if (
+        metadata["judge_resolved_device"] == "mps"
+        and effective_batch_size != 1
+    ):
+        raise ValueError(f"Judge cache {path} violates the MPS batch-size cap")
+    if not str(metadata["judge_model_parameter_dtype"]).strip():
+        raise ValueError(f"Judge cache {path} lacks model dtype provenance")
     if not re.fullmatch(r"[0-9a-f]{64}", str(metadata.get("context_hash", ""))):
         raise ValueError(f"Judge cache {path} has an invalid context hash")
     if expected_context_hash and metadata.get("context_hash") != expected_context_hash:

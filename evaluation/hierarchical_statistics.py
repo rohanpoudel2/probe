@@ -72,6 +72,8 @@ def hierarchical_paired_mean_difference(
     observed_b = float(cell_mean_b.mean())
     observed_diff = observed_a - observed_b
     rng = np.random.default_rng(seed)
+    bootstrap_a = np.empty(n_boot, dtype=float)
+    bootstrap_b = np.empty(n_boot, dtype=float)
     diffs = np.empty(n_boot, dtype=float)
     for iteration in range(n_boot):
         # Draw seed indices then group indices in this order: Generator.choice
@@ -83,18 +85,25 @@ def hierarchical_paired_mean_difference(
         seed_choice = rng.choice(n_seeds, size=n_seeds, replace=True)
         group_choice = rng.choice(n_groups, size=n_groups, replace=True)
         selection = np.ix_(seed_choice, group_choice)
-        diffs[iteration] = float(
-            cell_mean_a[selection].mean() - cell_mean_b[selection].mean()
-        )
+        bootstrap_a[iteration] = float(cell_mean_a[selection].mean())
+        bootstrap_b[iteration] = float(cell_mean_b[selection].mean())
+        diffs[iteration] = bootstrap_a[iteration] - bootstrap_b[iteration]
 
-    sign_flip = min(float(np.mean(diffs <= 0.0)), float(np.mean(diffs >= 0.0)))
+    tail_count = min(int(np.sum(diffs <= 0.0)), int(np.sum(diffs >= 0.0)))
+    # The finite-resample correction prevents impossible p=0 reports and
+    # preserves valid resolution at 1 / (n_boot + 1).
+    p_value = min(1.0, 2.0 * (tail_count + 1.0) / (n_boot + 1.0))
     return {
         "metric_a": observed_a,
+        "metric_a_ci_low": float(np.quantile(bootstrap_a, 0.025)),
+        "metric_a_ci_high": float(np.quantile(bootstrap_a, 0.975)),
         "metric_b": observed_b,
+        "metric_b_ci_low": float(np.quantile(bootstrap_b, 0.025)),
+        "metric_b_ci_high": float(np.quantile(bootstrap_b, 0.975)),
         "mean_diff": observed_diff,
         "ci_low": float(np.quantile(diffs, 0.025)),
         "ci_high": float(np.quantile(diffs, 0.975)),
-        "p_value": min(1.0, 2.0 * sign_flip),
+        "p_value": p_value,
         "n_groups": int(len(unique_groups)),
         "n_seeds": int(len(unique_seeds)),
         "n_rows": int(len(a)),

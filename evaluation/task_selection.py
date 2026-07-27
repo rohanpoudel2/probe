@@ -57,25 +57,9 @@ def monitor_access_regime(probe: object) -> str:
     )
 
 
-def add_system_name(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["system_name"] = (
-        out["probe"].astype(str)
-        + "|L"
-        + out["layer"].astype(str)
-        + "|"
-        + out["view"].astype(str)
-        + "|k"
-        + out["k"].astype(str)
-        + "|"
-        + out["balance_mode"].astype(str)
-    )
-    return out
-
-
 def select_frozen_source_systems(
     summary_df: pd.DataFrame,
-    selection_metric: str = "eval_recall_at_frozen_fpr_mean",
+    selection_metric: str = "eval_tpr_at_reference_alert_budget_mean",
     selection_k: int | None = None,
 ) -> pd.DataFrame:
     """Select one layer/view per probe using source eval at a fixed label budget.
@@ -134,7 +118,7 @@ def select_frozen_source_systems(
 
 def select_primary_source_systems(
     summary_df: pd.DataFrame,
-    selection_metric: str = "eval_recall_at_frozen_fpr_mean",
+    selection_metric: str = "eval_tpr_at_reference_alert_budget_mean",
     selection_k: int | None = None,
 ) -> pd.DataFrame:
     """Select one primary monitor per access regime using source data only.
@@ -208,7 +192,7 @@ def select_primary_source_systems(
     selected["selection_k"] = chosen_k
     selected["selection_metric"] = selection_metric
     selected["selection_rule"] = (
-        "source_eval_tpr_at_benign_frozen_threshold_family_layer_view_at_fixed_k_lexicographic_ties"
+        "source_eval_tpr_at_reference_alert_budget_family_layer_view_at_fixed_k_lexicographic_ties"
     )
     return selected
 

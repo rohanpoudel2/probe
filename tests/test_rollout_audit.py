@@ -1,11 +1,10 @@
 import torch
 
 from cli.audit_rollout_dataset import audit_rows
-from data.benign_audit import AUDIT_LABEL_SOURCE, AUDIT_PROTOCOL
-from data.benign_screening import (
-    ANNOTATION_PROTOCOL,
-    LABEL_SOURCE,
-    screened_text_sha256,
+from data.reference_traffic import (
+    REFERENCE_LABEL_SOURCE,
+    REFERENCE_PROTOCOL,
+    reference_text_sha256,
 )
 from data.generation_confidence import build_generation_confidence_trace
 
@@ -82,44 +81,40 @@ def test_rollout_audit_can_require_aligned_generation_confidence() -> None:
     assert report["n_valid_generation_confidence_traces"] == 2
 
 
-def test_benign_calibration_mode_accepts_all_negative_groups() -> None:
+def _as_reference(row: dict, split: str) -> dict:
+    row["task_family"] = "reference_traffic"
+    row["condition"] = "reference_prompt"
+    row["protocol_split"] = split
+    row["label_source"] = REFERENCE_LABEL_SOURCE
+    row["annotation_protocol"] = REFERENCE_PROTOCOL
+    row["generation"] = {
+        "response_token_count": 2,
+        "max_new_tokens": 32,
+        "stop_reason": "eos_token",
+    }
+    row["annotation_metadata"] = {
+        "reference_membership_only": True,
+        "semantic_negative_label": False,
+        "reference_partition": split,
+        "reference_text_sha256": reference_text_sha256(row),
+    }
+    return row
+
+
+def test_reference_traffic_mode_accepts_disjoint_membership_groups() -> None:
     rows = [
-        _row("r0", "s0", "q0", "benign", 0),
-        _row("r1", "s1", "q1", "benign", 0),
+        _as_reference(_row("r0", "s0", "q0", "reference", 0), "calibration"),
+        _as_reference(_row("r1", "s1", "q1", "reference", 0), "test"),
     ]
-    for row in rows:
-        row["protocol_split"] = "calibration"
-        row["label_source"] = LABEL_SOURCE
-        row["annotation_protocol"] = ANNOTATION_PROTOCOL
-        row["annotation_metadata"] = {
-            "n_independent_raters": 2,
-            "unanimous_eligible": True,
-            "screened_text_sha256": screened_text_sha256(row),
-        }
-    report = audit_rows(rows, benign_calibration=True)
+    report = audit_rows(rows, reference_traffic=True)
     assert report["status"] == "pass"
 
 
-def test_benign_calibration_mode_accepts_validated_automated_consensus() -> None:
+def test_reference_traffic_mode_rejects_repeated_groups() -> None:
     rows = [
-        _row("r0", "s0", "q0", "benign", 0),
-        _row("r1", "s1", "q1", "benign", 0),
+        _as_reference(_row("r0", "s0", "q0", "reference", 0), "calibration"),
+        _as_reference(_row("r1", "s1", "q0", "reference", 0), "calibration"),
     ]
-    for row in rows:
-        row["protocol_split"] = "calibration"
-        row["label_source"] = AUDIT_LABEL_SOURCE
-        row["annotation_protocol"] = AUDIT_PROTOCOL
-        row["annotation_metadata"] = {
-            "screened_text_sha256": screened_text_sha256(row),
-            "automated_decisions_sha256": "c" * 64,
-            "audit_manifest_sha256": "d" * 64,
-            "automated_consensus_eligible": True,
-            "n_automated_screeners": 3,
-            "human_audit_validated": True,
-            "random_audit_size": 300,
-            "audit_confidence_level": 0.95,
-            "max_false_acceptance_rate": 0.01,
-            "false_acceptance_rate_upper_bound": 0.00994,
-        }
-    report = audit_rows(rows, benign_calibration=True)
-    assert report["status"] == "pass"
+    report = audit_rows(rows, reference_traffic=True)
+    assert report["status"] == "fail"
+    assert any("exactly one rollout" in error for error in report["errors"])

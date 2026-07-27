@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from cli.build_falsification_manifest import build_falsification_manifest
+from cli.common import load_yaml
 from cli.import_monitorbench_rollouts import (
     main as import_monitorbench_main,
     normalize_monitorbench_artifact,
@@ -320,7 +321,7 @@ def test_partial_cli_import_discovers_results_and_marks_rows_ineligible(
             str(run_manifest_path),
             "--output",
             str(output_path),
-            "--allow_partial_pilot",
+            "--allow_incomplete_suite",
         ],
     )
     import_monitorbench_main()
@@ -332,3 +333,14 @@ def test_partial_cli_import_discovers_results_and_marks_rows_ineligible(
     )
     assert sidecar["complete_official_suite"] is False
     assert sidecar["eligible_for_main_study"] is False
+def test_monitorbench_source_lock_matches_adapter_contract() -> None:
+    source_lock = load_yaml(
+        "experiments/data/huggingface_source_lock.yaml"
+    )["sources"]["cot_monitorability_raw"]["monitorbench"]
+    adapter_source = load_yaml(
+        "experiments/protocol/monitorbench_adapter.yaml"
+    )["source"]
+    assert source_lock["github_repo"] == adapter_source["repository"]
+    assert source_lock["revision"] == adapter_source["revision"]
+    assert source_lock["github_zip"] == adapter_source["archive_url"]
+    assert source_lock["sha256"] == adapter_source["archive_sha256"]

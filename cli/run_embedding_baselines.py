@@ -21,8 +21,11 @@ from cli.run_task_sweep import (
 from data.text_embedding_cache import load_text_embedding_cache
 from data.text_views import ALLOWED_TEXT_VIEWS
 from evaluation.metrics import (
-    require_independent_calibration_negatives,
-    select_threshold_at_fpr,
+    alert_rate_summary,
+    compute_alert_rate,
+    require_disjoint_reference_groups,
+    require_independent_reference_groups,
+    select_threshold_at_alert_rate,
 )
 from task_benchmark.sampling import FewShotSelection, sample_few_shot_train
 from tasks import TASK_REGISTRY
@@ -60,7 +63,7 @@ def _validate_cache(
     if np.any(cache["truncated"]) and not allow_truncated:
         raise ValueError(
             f"Cache {cache['cache_file']} contains truncated text; use a larger registered "
-            "max_length or explicitly pass --allow_truncated_cache for a pilot"
+            "max_length or explicitly pass --allow_truncated_cache for a debug run"
         )
 
 
@@ -119,32 +122,33 @@ def main() -> None:
     parser.add_argument("--source_cache_dir", required=True)
     parser.add_argument("--target_task", default=None, choices=sorted(TASK_REGISTRY))
     parser.add_argument("--target_cache_dir", default=None)
-    parser.add_argument("--calibration_task", default=None, choices=sorted(TASK_REGISTRY))
-    parser.add_argument("--calibration_cache_dir", default=None)
+    parser.add_argument("--reference_task", required=True, choices=sorted(TASK_REGISTRY))
+    parser.add_argument("--reference_cache_dir", required=True)
     parser.add_argument("--model", required=True, help="Registered display name of the monitored model")
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--views", default="prompt_text,answer_text,transcript_text")
     parser.add_argument("--k_values", default="1,2,4,8,16,32")
     parser.add_argument("--seeds", type=int, default=10)
-    parser.add_argument("--max_fpr", type=float, default=0.01)
-    parser.add_argument("--min_calibration_negatives", type=int, default=1000)
+    parser.add_argument("--max_reference_alert_rate", type=float, default=0.01)
+    parser.add_argument("--min_reference_groups", type=int, default=1000)
     parser.add_argument("--allow_dirty_cache", action="store_true")
     parser.add_argument("--allow_truncated_cache", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--selection_only",
+        action="store_true",
+        help="Score source eval and reference traffic without touching test targets.",
+    )
     args = parser.parse_args()
 
     if bool(args.target_task) != bool(args.target_cache_dir):
         raise ValueError("--target_task and --target_cache_dir must be provided together")
-    if bool(args.calibration_task) != bool(args.calibration_cache_dir):
-        raise ValueError(
-            "--calibration_task and --calibration_cache_dir must be provided together"
-        )
-    if args.source_task == "benign_calibration":
-        raise ValueError("benign_calibration cannot be used as a few-shot source task")
-    if args.target_task == "benign_calibration":
-        raise ValueError("benign_calibration cannot be used as a transfer target")
-    if args.calibration_task and args.calibration_task != "benign_calibration":
-        raise ValueError("Dedicated calibration must use the benign_calibration task contract")
+    if args.source_task == "reference_traffic":
+        raise ValueError("reference_traffic cannot be a few-shot source task")
+    if args.target_task == "reference_traffic":
+        raise ValueError("reference_traffic cannot be a transfer target")
+    if args.reference_task != "reference_traffic":
+        raise ValueError("Operational calibration requires reference_traffic")
     views = [value.strip() for value in args.views.split(",") if value.strip()]
     if not views or not set(views).issubset(ALLOWED_TEXT_VIEWS):
         raise ValueError(f"Text views must be chosen from {sorted(ALLOWED_TEXT_VIEWS)}")
@@ -157,7 +161,10 @@ def main() -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
     out_file = (
         results_dir
-        / f"{args.source_task}__to__{target_task}__text_embedding_baselines.jsonl"
+        / (
+            f"{args.source_task}__to__{target_task}__text_embedding_baselines"
+            f"{'__selection' if args.selection_only else ''}.jsonl"
+        )
     )
     if args.overwrite and out_file.exists():
         out_file.unlink()
@@ -177,27 +184,23 @@ def main() -> None:
                 view=view,
                 allow_truncated=args.allow_truncated_cache,
             )
-            calibration_cache = (
-                load_text_embedding_cache(
-                    _cache_path(args.calibration_cache_dir, args.calibration_task, view),
-                    require_clean_code=not args.allow_dirty_cache,
-                )
-                if args.calibration_cache_dir
-                else source
+            reference_cache = load_text_embedding_cache(
+                _cache_path(args.reference_cache_dir, args.reference_task, view),
+                require_clean_code=not args.allow_dirty_cache,
             )
             _validate_cache(
-                calibration_cache,
-                task_name=args.calibration_task or args.source_task,
+                reference_cache,
+                task_name=args.reference_task,
                 view=view,
                 allow_truncated=args.allow_truncated_cache,
             )
-            _assert_compatible(source, calibration_cache)
+            _assert_compatible(source, reference_cache)
             target_cache = (
                 load_text_embedding_cache(
                     _cache_path(args.target_cache_dir, args.target_task, view),
                     require_clean_code=not args.allow_dirty_cache,
                 )
-                if args.target_cache_dir
+                if args.target_cache_dir and not args.selection_only
                 else None
             )
             if target_cache is not None:
@@ -211,10 +214,17 @@ def main() -> None:
 
             train = _subset(source, "train")
             source_eval = _subset(source, "eval")
-            source_test = _subset(source, "test")
-            calibration = _subset(calibration_cache, "calibration")
-            if args.calibration_cache_dir and np.any(calibration["labels"] != 0):
-                raise ValueError("Dedicated benign calibration cache must be all-negative")
+            source_test = (
+                None if args.selection_only else _subset(source, "test")
+            )
+            reference = _subset(reference_cache, "calibration")
+            reference_holdout = _subset(reference_cache, "test")
+            if np.any(reference["labels"] != 0) or np.any(
+                reference_holdout["labels"] != 0
+            ):
+                raise ValueError(
+                    "Reference cache must use membership value 0 only"
+                )
             target_test = _subset(target_cache, "test") if target_cache is not None else None
             meta = source["metadata"]
             model_slug = _slug(args.model)
@@ -226,6 +236,7 @@ def main() -> None:
                     run_id = (
                         f"{model_slug}__{args.source_task}__{target_task}__B2_text_embedding"
                         f"__{encoder_slug}-{spec_short}__layer-2__{view}__k{k}__seed{seed}__balanced"
+                        f"{'__selection' if args.selection_only else ''}"
                     )
                     prediction_path = _prediction_path(predictions_dir, run_id)
                     if run_id in existing and prediction_path.exists():
@@ -250,31 +261,51 @@ def main() -> None:
                     )
                     classifier.fit(selected_scaled, selection.y)
                     scored = {
-                        "source_calibration": _score_split(
-                            scaler, classifier, calibration
+                        "reference_calibration": _score_split(
+                            scaler, classifier, reference
+                        ),
+                        "reference_holdout": _score_split(
+                            scaler, classifier, reference_holdout
                         ),
                         "source_eval": _score_split(scaler, classifier, source_eval),
-                        "source_test": _score_split(scaler, classifier, source_test),
                     }
+                    if source_test is not None:
+                        scored["source_test"] = _score_split(
+                            scaler, classifier, source_test
+                        )
                     if target_test is not None:
                         scored["target_test"] = _score_split(
                             scaler, classifier, target_test
                         )
-                    n_calibration_negative_groups = require_independent_calibration_negatives(
-                        scored["source_calibration"]["labels"],
-                        scored["source_calibration"]["question_ids"],
-                        min_negative_groups=args.min_calibration_negatives,
+                    n_reference_groups = require_independent_reference_groups(
+                        scored["reference_calibration"]["question_ids"],
+                        min_reference_groups=args.min_reference_groups,
                     )
-                    threshold = select_threshold_at_fpr(
-                        scored["source_calibration"]["labels"],
-                        scored["source_calibration"]["scores"],
-                        max_fpr=args.max_fpr,
-                        min_negatives=args.min_calibration_negatives,
+                    n_reference_holdout_groups = require_independent_reference_groups(
+                        scored["reference_holdout"]["question_ids"],
+                        min_reference_groups=args.min_reference_groups,
+                    )
+                    require_disjoint_reference_groups(
+                        scored["reference_calibration"]["question_ids"],
+                        scored["reference_holdout"]["question_ids"],
+                    )
+                    threshold = select_threshold_at_alert_rate(
+                        scored["reference_calibration"]["scores"],
+                        max_alert_rate=args.max_reference_alert_rate,
+                        min_reference=args.min_reference_groups,
+                    )
+                    holdout_alerts = alert_rate_summary(
+                        scored["reference_holdout"]["scores"], threshold
                     )
                     row: dict[str, Any] = {
                         "status": "ok",
                         "error": False,
                         "run_id": run_id,
+                        "execution_mode": (
+                            "selection"
+                            if args.selection_only
+                            else "confirmatory"
+                        ),
                         "probe": "B2_text_embedding_logistic",
                         "method_family": "black_box_text_embedding",
                         "k": k,
@@ -292,17 +323,35 @@ def main() -> None:
                         "embedding_model_revision": meta["embedding_model_revision"],
                         "embedding_spec_sha256": meta["embedding_spec_sha256"],
                         "source_cache_sha256": source["cache_sha256"],
-                        "calibration_cache_sha256": calibration_cache["cache_sha256"],
+                        "reference_cache_sha256": reference_cache["cache_sha256"],
                         "target_cache_sha256": (
                             target_cache["cache_sha256"] if target_cache is not None else None
                         ),
                         "operating_threshold": float(threshold),
-                        "requested_max_fpr": args.max_fpr,
-                        "threshold_source": "source_calibration_negatives",
-                        "n_calibration_negative": int(
-                            np.sum(scored["source_calibration"]["labels"] == 0)
+                        "requested_max_reference_alert_rate": args.max_reference_alert_rate,
+                        "threshold_source": "unlabeled_reference_traffic",
+                        "calibration_method": "split_conformal_upper_tail_v1",
+                        "n_reference_calibration": int(
+                            len(scored["reference_calibration"]["scores"])
                         ),
-                        "n_calibration_negative_groups": n_calibration_negative_groups,
+                        "n_reference_groups": n_reference_groups,
+                        "n_reference_holdout": int(
+                            len(scored["reference_holdout"]["scores"])
+                        ),
+                        "n_reference_holdout_groups": n_reference_holdout_groups,
+                        "reference_calibration_alert_rate": compute_alert_rate(
+                            scored["reference_calibration"]["scores"], threshold
+                        ),
+                        "reference_holdout_alert_count": holdout_alerts["alerts"],
+                        "reference_holdout_alert_rate": holdout_alerts["rate"],
+                        "reference_holdout_alert_rate_ci_low": holdout_alerts["ci_low"],
+                        "reference_holdout_alert_rate_ci_high": holdout_alerts["ci_high"],
+                        "reference_holdout_alert_budget_violation": bool(
+                            holdout_alerts["ci_low"]
+                            > args.max_reference_alert_rate
+                        ),
+                        "conformal_p_value_resolution": 1.0
+                        / (len(scored["reference_calibration"]["scores"]) + 1.0),
                         "n_train_pos": int(np.sum(selection.y == 1)),
                         "n_train_neg": int(np.sum(selection.y == 0)),
                         "n_train_groups": int(len(np.unique(selection.group_ids))),
@@ -311,20 +360,38 @@ def main() -> None:
                         "train_example_ids": train["example_ids"][selection.indices].tolist(),
                         "train_question_ids": selection.group_ids.tolist(),
                     }
-                    for prefix, split_name in (
-                        ("calibration", "source_calibration"),
-                        ("eval", "source_eval"),
-                        ("test", "source_test"),
-                    ):
+                    for prefix, split_name in (("eval", "source_eval"),):
                         row.update(
                             _metric_payload(
                                 prefix,
                                 scored[split_name],
                                 threshold,
                                 probability_scores=True,
-                                max_fpr=args.max_fpr,
+                                max_alert_rate=args.max_reference_alert_rate,
                             )
                         )
+                    if "source_test" in scored:
+                        row.update(
+                            _metric_payload(
+                                "test",
+                                scored["source_test"],
+                                threshold,
+                                probability_scores=True,
+                                max_alert_rate=args.max_reference_alert_rate,
+                            )
+                        )
+                    else:
+                        for metric in (
+                            "auroc",
+                            "auprc",
+                            "tpr_at_reference_alert_budget",
+                            "tpr_at_1pct_reference_alert_budget",
+                            "fpr_at_frozen_threshold",
+                            "oracle_tpr_at_requested_fpr",
+                            "brier",
+                            "ece",
+                        ):
+                            row[f"test_{metric}"] = float("nan")
                     if "target_test" in scored:
                         row.update(
                             _metric_payload(
@@ -332,17 +399,17 @@ def main() -> None:
                                 scored["target_test"],
                                 threshold,
                                 probability_scores=True,
-                                max_fpr=args.max_fpr,
+                                max_alert_rate=args.max_reference_alert_rate,
                             )
                         )
                     else:
                         for metric in (
                             "auroc",
                             "auprc",
-                            "recall_at_frozen_fpr",
-                            "recall_at_1pct_fpr",
+                            "tpr_at_reference_alert_budget",
+                            "tpr_at_1pct_reference_alert_budget",
                             "fpr_at_frozen_threshold",
-                            "oracle_recall_at_requested_fpr",
+                            "oracle_tpr_at_requested_fpr",
                             "brier",
                             "ece",
                         ):

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +94,22 @@ def _load_prediction_file(path_value: str, results_dir: Path) -> pd.DataFrame:
     return pd.read_json(path, lines=True)
 
 
+def _archive_comparisons(results_dir: Path, comparisons_path: Path) -> str:
+    comparisons_sha256 = hashlib.sha256(comparisons_path.read_bytes()).hexdigest()
+    archive_dir = results_dir / "protocol_artifacts"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archived_path = archive_dir / "primary_comparisons.yaml"
+    if archived_path.exists():
+        archived_sha256 = hashlib.sha256(archived_path.read_bytes()).hexdigest()
+        if archived_sha256 != comparisons_sha256:
+            raise ValueError(
+                "Refusing to replace the archived primary comparison registry"
+            )
+    elif comparisons_path.resolve() != archived_path.resolve():
+        shutil.copy2(comparisons_path, archived_path)
+    return comparisons_sha256
+
+
 def _paired_predictions(
     runs_a: pd.DataFrame,
     runs_b: pd.DataFrame,
@@ -150,6 +168,10 @@ def main() -> None:
     comparisons = config.get("comparisons", [])
     if not comparisons:
         raise ValueError("Comparison file must define at least one pre-registered comparison")
+    comparisons_sha256 = _archive_comparisons(
+        results_dir,
+        Path(args.comparisons),
+    )
 
     primary_selection_path = results_dir / "task_primary_source_systems.csv"
     primary_comparisons = [
@@ -203,6 +225,9 @@ def main() -> None:
                 "metric": metric,
                 "system_a": json.dumps(filters_a, sort_keys=True),
                 "system_b": json.dumps(filters_b, sort_keys=True),
+                "comparisons_sha256": comparisons_sha256,
+                "bootstrap_samples": int(args.bootstrap_samples),
+                "bootstrap_seed": int(args.seed + index),
                 **result,
             }
         )

@@ -18,7 +18,9 @@ def main() -> None:
     parser.add_argument("--probe", required=True)
     parser.add_argument("--k", required=True, type=int)
     parser.add_argument("--balance_mode", default="balanced")
-    parser.add_argument("--metric", default="transfer_recall_at_1pct_fpr_mean")
+    parser.add_argument(
+        "--metric", default="transfer_tpr_at_1pct_reference_alert_budget_mean"
+    )
     args = parser.parse_args()
 
     report_path = Path(args.results_dir) / "task_frozen_transfer_report.csv"

@@ -15,21 +15,11 @@ from tasks.jsonl_utils import read_jsonl, require_fields, rollout_metadata
 class CoTDistortionTask(BehaviorTask):
     spec = TaskSpec(
         name="cot_distortion",
-        primary_metric="recall_at_frozen_fpr",
         label_semantics={
             0: "official_target_outcome_not_verified",
             1: "official_target_outcome_verified",
         },
         grouped_split_key="question_id",
-        default_spans=[
-            "full_text",
-            "reasoning",
-            "reasoning_early",
-            "reasoning_mid",
-            "reasoning_late",
-            "pre_answer",
-            "answer",
-        ],
         evaluation_only=True,
         unavailable_baselines={
             "B4_output_confidence_logistic": (
@@ -37,16 +27,11 @@ class CoTDistortionTask(BehaviorTask):
                 "per-token distributions required for generation-confidence features."
             )
         },
-        notes=(
-            "Test-only official MonitorBench derived outcome family. Labels are official "
-            "target-outcome verifier results, not CoT-unfaithfulness labels or the official "
-            "MonitorBench monitorability metric."
-        ),
     )
 
     def load(self, path: Optional[str] = None) -> List[TaskExample]:
         if path is None:
-            raise ValueError("CoTDistortionTask.load requires a JSONL path in Phase 1.")
+            raise ValueError("CoTDistortionTask.load requires a JSONL path.")
 
         adapter, adapter_sha256 = load_monitorbench_adapter(
             DEFAULT_MONITORBENCH_ADAPTER

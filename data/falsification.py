@@ -15,8 +15,8 @@ FALSIFICATION_REGISTRY_SCHEMA_VERSION = "frontier-falsification-registry-v1"
 FALSIFICATION_EXAMPLE_SCHEMA_VERSION = "frontier-falsification-example-v1"
 FALSIFICATION_EVALUATION_SCHEMA_VERSION = "frontier-falsification-evaluation-v1"
 FALSIFICATION_COMPARISONS_SCHEMA_VERSION = "frontier-falsification-comparisons-v1"
-SHIFT_AXES = ("behavior", "domain", "template", "paraphrase", "obfuscation")
-TRANSFORMED_AXES = {"paraphrase", "obfuscation"}
+SHIFT_AXES = ("behavior", "domain", "template", "presentation", "obfuscation")
+TRANSFORMED_AXES = {"presentation", "obfuscation"}
 SHIFT_COMPARISON_METRICS = {"tpr", "fpr", "positive_rate"}
 HARD_NEGATIVE_COMPARISON_METRICS = {
     "hard_negative_fpr",
@@ -234,30 +234,29 @@ def validate_falsification_registry(registry: dict[str, Any]) -> None:
     if int(shift_protocol.get("min_independent_groups_per_axis_final", 0)) < 1:
         raise ValueError("Final shift-group minimum must be positive")
 
-    review = registry.get("transformation_review")
-    if not isinstance(review, dict) or not str(review.get("protocol", "")).strip():
+    validation = registry.get("transformation_validation")
+    if (
+        not isinstance(validation, dict)
+        or validation.get("protocol") != "deterministic-invariant-transform-v1"
+    ):
         raise ValueError(
-            "Falsification registry requires a transformation-review protocol"
+            "Falsification registry requires deterministic transformation validation"
         )
-    if int(review.get("min_independent_raters", 0)) < 2:
+    for key in (
+        "require_executable_inverse",
+        "require_verbatim_payload_binding",
+        "require_unchanged_answer_metadata",
+    ):
+        if validation.get(key) is not True:
+            raise ValueError(f"transformation_validation.{key} must be true")
+    generators = validation.get("allowed_generators")
+    if (
+        not isinstance(generators, dict)
+        or set(generators) != TRANSFORMED_AXES
+        or any(not isinstance(generators[axis], dict) or not generators[axis] for axis in TRANSFORMED_AXES)
+    ):
         raise ValueError(
-            "Transformed prompts require at least two independent reviewers"
-        )
-    decisions = set(
-        _unique_strings(
-            review.get("required_boolean_decisions"),
-            field="required_boolean_decisions",
-            allow_empty=False,
-        )
-    )
-    expected_decisions = {
-        "semantic_equivalence",
-        "target_behavior_preserved",
-        "answer_not_leaked",
-    }
-    if decisions != expected_decisions:
-        raise ValueError(
-            f"Transformation decisions must be {sorted(expected_decisions)}"
+            "transformation_validation must register generators for both transformed axes"
         )
 
     hard_protocol = registry.get("hard_negative_protocol")
@@ -273,7 +272,7 @@ def validate_falsification_registry(registry: dict[str, Any]) -> None:
         if hard_protocol.get(key) is not True:
             raise ValueError(f"hard_negative_protocol.{key} must be true")
     if (
-        int(hard_protocol.get("min_pairs_pilot", 0)) < 1
+        int(hard_protocol.get("min_pairs_selection", 0)) < 1
         or int(hard_protocol.get("min_independent_groups_final", 0)) < 1
     ):
         raise ValueError("Hard-negative minimums must be positive")
@@ -426,47 +425,50 @@ def _validate_transformation(
 ) -> None:
     if not isinstance(transformation, dict):
         raise ValueError(
-            "Held-out paraphrase/obfuscation requires transformation provenance"
+            "Held-out presentation/obfuscation requires transformation provenance"
         )
     axis = str(transformation.get("axis", ""))
     if axis not in TRANSFORMED_AXES:
-        raise ValueError("Transformation axis must be paraphrase or obfuscation")
+        raise ValueError("Transformation axis must be presentation or obfuscation")
     if metadata["axes"][axis]["role"] != "heldout":
         raise ValueError("Transformation axis must be assigned heldout")
     for key in (
         "parent_scenario_id",
         "variant_id",
-        "transformation_protocol",
+        "generator_protocol",
+        "generator_id",
         "transformation_source",
-        "transformation_author_id",
         "parent_prompt_sha256",
         "variant_prompt_sha256",
+        "source_payload_sha256",
+        "answer_metadata_sha256",
     ):
         if not str(transformation.get(key, "")).strip():
             raise ValueError(f"Transformation provenance requires {key}")
-    for key in ("parent_prompt_sha256", "variant_prompt_sha256"):
+    for key in (
+        "parent_prompt_sha256",
+        "variant_prompt_sha256",
+        "source_payload_sha256",
+        "answer_metadata_sha256",
+    ):
         if not SHA256_RE.fullmatch(str(transformation[key])):
             raise ValueError(f"Transformation {key} must be a SHA-256")
-    review = transformation.get("review")
-    if not isinstance(review, dict):
-        raise ValueError("Transformation provenance requires independent review")
-    expected_protocol = registry["transformation_review"]["protocol"]
-    if review.get("protocol") != expected_protocol:
-        raise ValueError("Transformation uses an unregistered review protocol")
-    raters = review.get("independent_rater_ids")
-    min_raters = int(registry["transformation_review"]["min_independent_raters"])
-    if (
-        not isinstance(raters, list)
-        or len(raters) < min_raters
-        or len(set(raters)) != len(raters)
-        or any(not str(rater).strip() for rater in raters)
+    validation = registry["transformation_validation"]
+    registered = validation["allowed_generators"][axis]
+    axis_value = str(metadata["axes"][axis]["value"])
+    if transformation["generator_id"] != axis_value:
+        raise ValueError("Transformation generator_id must match the held-out value")
+    if registered.get(axis_value) != transformation["generator_protocol"]:
+        raise ValueError("Transformation uses an unregistered deterministic generator")
+    if transformation.get("transformation_source") != "executable_generator":
+        raise ValueError("Transformation source must be executable_generator")
+    for key in (
+        "inverse_verified",
+        "verbatim_payload_bound",
+        "answer_metadata_unchanged",
     ):
-        raise ValueError("Transformation lacks enough distinct independent reviewers")
-    for decision in registry["transformation_review"]["required_boolean_decisions"]:
-        if review.get(decision) is not True:
-            raise ValueError(
-                f"Transformation review did not unanimously pass {decision}"
-            )
+        if transformation.get(key) is not True:
+            raise ValueError(f"Transformation failed invariant {key}")
 
 
 def validate_falsification_metadata(
@@ -510,7 +512,7 @@ def validate_falsification_metadata(
     if heldout_transformed:
         if len(heldout_transformed) != 1:
             raise ValueError(
-                "Each reviewed variant must isolate exactly one transformed shift axis"
+                "Each deterministic variant must isolate one transformed shift axis"
             )
         _validate_transformation(
             metadata.get("transformation"), metadata=metadata, registry=registry

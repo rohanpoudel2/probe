@@ -43,13 +43,14 @@ def test_protocol_orchestrator_wires_all_registered_black_box_baselines(
                     "source": "features/source",
                     "target": "features/target",
                 },
+                "reference_feature_dir": "features/reference",
                 "labeled_data": {"source": "source.jsonl", "target": "target.jsonl"},
-                "benign_labeled_data": "benign.jsonl",
+                "reference_data": "reference.jsonl",
                 "text_embedding_cache_dirs": {
                     "source": "embeddings/source",
                     "target": "embeddings/target",
                 },
-                "benign_embedding_cache_dir": "embeddings/benign",
+                "reference_embedding_cache_dir": "embeddings/reference",
                 "llm_judge_cache_dir": "judge-cache",
                 "falsification_manifests": {
                     "source": "source-falsification.json",
@@ -59,15 +60,26 @@ def test_protocol_orchestrator_wires_all_registered_black_box_baselines(
         ],
     }
     commands: list[list[str]] = []
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("test: true\n", encoding="utf-8")
     monkeypatch.setattr(orchestrator, "load_yaml", lambda _: config)
     monkeypatch.setattr(
         orchestrator, "run_cmd", lambda command: commands.append(command)
     )
     monkeypatch.setattr(
-        sys, "argv", ["run_protocol_multimodel_benchmark", "--config", "x"]
+        sys,
+        "argv",
+        [
+            "run_protocol_multimodel_benchmark",
+            "--config",
+            str(config_path),
+        ],
     )
 
     orchestrator.main()
+    assert (
+        tmp_path / "results" / "protocol_artifacts" / "execution_manifest.yaml"
+    ).exists()
 
     invoked_modules = [command[2] for command in commands if command[1:2] == ["-m"]]
     for module_name in (
@@ -89,8 +101,8 @@ def test_protocol_orchestrator_wires_all_registered_black_box_baselines(
         for command in commands
         if "cli.run_output_confidence_baselines" in command
     )
-    assert confidence_command[confidence_command.index("--calibration_data") + 1] == (
-        "benign.jsonl"
+    assert confidence_command[confidence_command.index("--reference_data") + 1] == (
+        "reference.jsonl"
     )
     falsification_command = next(
         command
@@ -110,3 +122,40 @@ def test_protocol_orchestrator_wires_all_registered_black_box_baselines(
     assert significance_command[significance_command.index("--comparisons") + 1] == (
         "falsification-comparisons.yaml"
     )
+
+    commands.clear()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_protocol_multimodel_benchmark",
+            "--config",
+            str(config_path),
+            "--selection-only",
+            "--results-dir",
+            str(tmp_path / "selection-results"),
+        ],
+    )
+    orchestrator.main()
+    assert (
+        tmp_path
+        / "selection-results"
+        / "protocol_artifacts"
+        / "execution_manifest.yaml"
+    ).exists()
+    model_runners = [
+        command
+        for command in commands
+        if len(command) > 2
+        and command[1:2] == ["-m"]
+        and command[2].startswith("cli.run_")
+        and command[2]
+        not in {
+            "cli.run_protocol_multimodel_benchmark",
+        }
+    ]
+    assert all("--selection_only" in command for command in model_runners)
+    assert not any(
+        "cli.evaluate_falsification_slices" in command for command in commands
+    )
+    assert any("cli.build_frozen_transfer_report" in command for command in commands)

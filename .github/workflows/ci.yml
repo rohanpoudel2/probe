@@ -27,5 +27,13 @@ jobs:
       - name: Compile Python sources
         run: uv run python -m compileall -q cli data evaluation extraction features probes task_benchmark tasks tests
 
+      - name: Lint maintained sources
+        run: uv run ruff check .
+
+      - name: Validate experiment manifests
+        run: |
+          uv run python -m cli.validate_multimodel_config --config experiments/protocol/main_research_manifest.yaml
+          uv run python -m cli.validate_multimodel_config --config experiments/controls/honesty_auxiliary_manifest.yaml
+
       - name: Run integrity suite
-        run: uv run pytest
+        run: uv run pytest -q

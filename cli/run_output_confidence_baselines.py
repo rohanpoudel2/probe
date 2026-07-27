@@ -26,8 +26,11 @@ from data.group_splitting import declared_protocol_split
 from data.rollout_schema import content_hash
 from data.text_views import monitored_model_identity
 from evaluation.metrics import (
-    require_independent_calibration_negatives,
-    select_threshold_at_fpr,
+    alert_rate_summary,
+    compute_alert_rate,
+    require_disjoint_reference_groups,
+    require_independent_reference_groups,
+    select_threshold_at_alert_rate,
 )
 from task_benchmark.sampling import FewShotSelection, sample_few_shot_train
 from tasks import TASK_REGISTRY
@@ -70,13 +73,24 @@ def _load_splits(task_name: str, path: str):
     )
 
 
-def _load_calibration(task_name: str, path: str):
+def _load_reference_partitions(task_name: str, path: str):
     task = TASK_REGISTRY[task_name]()
     examples = task.load(path)
-    if any(example.label != 0 for example in examples):
-        raise ValueError("Dedicated benign confidence calibration must be all-negative")
+    partitions = {
+        split: [
+            example
+            for example in examples
+            if example.metadata.get("protocol_split") == split
+        ]
+        for split in ("calibration", "test")
+    }
+    for split, rows in partitions.items():
+        if not rows or any(example.label != 0 for example in rows):
+            raise ValueError(
+                f"Reference confidence {split} must use membership value 0"
+            )
     return (
-        _arrays(examples),
+        {split: _arrays(rows) for split, rows in partitions.items()},
         monitored_model_identity(examples),
         hashlib.sha256(Path(path).read_bytes()).hexdigest(),
     )
@@ -97,7 +111,7 @@ def _score_split(
 def _require_identity(reference: dict[str, str], other: dict[str, str]) -> None:
     if reference != other:
         raise ValueError(
-            "Source, calibration, and transfer confidence data must come from the same "
+            "Source, reference, and transfer confidence data must come from the same "
             "monitored model and tokenizer revisions"
         )
 
@@ -111,35 +125,34 @@ def main() -> None:
     parser.add_argument("--target_task", default=None, choices=sorted(TASK_REGISTRY))
     parser.add_argument("--target_data", default=None)
     parser.add_argument(
-        "--calibration_task", default=None, choices=sorted(TASK_REGISTRY)
+        "--reference_task", required=True, choices=sorted(TASK_REGISTRY)
     )
-    parser.add_argument("--calibration_data", default=None)
+    parser.add_argument("--reference_data", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--k_values", default="1,2,4,8,16,32")
     parser.add_argument("--seeds", type=int, default=10)
-    parser.add_argument("--max_fpr", type=float, default=0.01)
-    parser.add_argument("--min_calibration_negatives", type=int, default=1000)
+    parser.add_argument("--max_reference_alert_rate", type=float, default=0.01)
+    parser.add_argument("--min_reference_groups", type=int, default=1000)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--selection_only",
+        action="store_true",
+        help="Score source eval and reference traffic without touching test targets.",
+    )
     args = parser.parse_args()
 
     if bool(args.target_task) != bool(args.target_data):
         raise ValueError("--target_task and --target_data must be provided together")
-    if bool(args.calibration_task) != bool(args.calibration_data):
-        raise ValueError(
-            "--calibration_task and --calibration_data must be provided together"
-        )
     if (
-        args.source_task == "benign_calibration"
-        or args.target_task == "benign_calibration"
+        args.source_task == "reference_traffic"
+        or args.target_task == "reference_traffic"
     ):
         raise ValueError(
-            "benign_calibration can only be supplied through --calibration_task"
+            "reference_traffic cannot be a training or transfer task"
         )
-    if args.calibration_task and args.calibration_task != "benign_calibration":
-        raise ValueError(
-            "Dedicated calibration must use the benign_calibration task contract"
-        )
+    if args.reference_task != "reference_traffic":
+        raise ValueError("Operational calibration requires reference_traffic")
     for role, task_name in (
         ("source", args.source_task),
         ("target", args.target_task),
@@ -165,19 +178,11 @@ def main() -> None:
     source, source_identity, source_hash = _load_splits(
         args.source_task, args.source_data
     )
-    if args.calibration_data:
-        calibration, calibration_identity, calibration_hash = _load_calibration(
-            args.calibration_task, args.calibration_data
-        )
-        _require_identity(source_identity, calibration_identity)
-    else:
-        if "calibration" not in source:
-            raise ValueError(
-                "Source data has no calibration split; provide dedicated benign calibration"
-            )
-        calibration = source["calibration"]
-        calibration_hash = source_hash
-    if args.target_data:
+    reference, reference_identity, reference_hash = _load_reference_partitions(
+        args.reference_task, args.reference_data
+    )
+    _require_identity(source_identity, reference_identity)
+    if args.target_data and not args.selection_only:
         target_splits, target_identity, target_hash = _load_splits(
             target_task, args.target_data
         )
@@ -197,7 +202,10 @@ def main() -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
     out_file = (
         results_dir
-        / f"{args.source_task}__to__{target_task}__output_confidence_baselines.jsonl"
+        / (
+            f"{args.source_task}__to__{target_task}__output_confidence_baselines"
+            f"{'__selection' if args.selection_only else ''}.jsonl"
+        )
     )
     if args.overwrite and out_file.exists():
         out_file.unlink()
@@ -213,6 +221,7 @@ def main() -> None:
                     f"{args.model}__{args.source_task}__{target_task}__"
                     f"B4_output_confidence_logistic__layer-4__generation_confidence__"
                     f"k{k}__seed{seed}__balanced"
+                    f"{'__selection' if args.selection_only else ''}"
                 )
                 prediction_path = _prediction_path(predictions_dir, run_id)
                 if run_id in existing and prediction_path.exists():
@@ -237,29 +246,51 @@ def main() -> None:
                 )
                 classifier.fit(selected_scaled, selection.y)
                 scored = {
-                    "source_calibration": _score_split(scaler, classifier, calibration),
+                    "reference_calibration": _score_split(
+                        scaler, classifier, reference["calibration"]
+                    ),
+                    "reference_holdout": _score_split(
+                        scaler, classifier, reference["test"]
+                    ),
                     "source_eval": _score_split(scaler, classifier, source["eval"]),
-                    "source_test": _score_split(scaler, classifier, source["test"]),
                 }
-                if target is not None:
+                if not args.selection_only:
+                    scored["source_test"] = _score_split(
+                        scaler, classifier, source["test"]
+                    )
+                if target is not None and not args.selection_only:
                     scored["target_test"] = _score_split(scaler, classifier, target)
-                n_calibration_negative_groups = (
-                    require_independent_calibration_negatives(
-                        scored["source_calibration"]["labels"],
-                        scored["source_calibration"]["question_ids"],
-                        min_negative_groups=args.min_calibration_negatives,
+                n_reference_groups = (
+                    require_independent_reference_groups(
+                        scored["reference_calibration"]["question_ids"],
+                        min_reference_groups=args.min_reference_groups,
                     )
                 )
-                threshold = select_threshold_at_fpr(
-                    scored["source_calibration"]["labels"],
-                    scored["source_calibration"]["scores"],
-                    max_fpr=args.max_fpr,
-                    min_negatives=args.min_calibration_negatives,
+                n_reference_holdout_groups = require_independent_reference_groups(
+                    scored["reference_holdout"]["question_ids"],
+                    min_reference_groups=args.min_reference_groups,
+                )
+                require_disjoint_reference_groups(
+                    scored["reference_calibration"]["question_ids"],
+                    scored["reference_holdout"]["question_ids"],
+                )
+                threshold = select_threshold_at_alert_rate(
+                    scored["reference_calibration"]["scores"],
+                    max_alert_rate=args.max_reference_alert_rate,
+                    min_reference=args.min_reference_groups,
+                )
+                holdout_alerts = alert_rate_summary(
+                    scored["reference_holdout"]["scores"], threshold
                 )
                 row = {
                     "status": "ok",
                     "error": False,
                     "run_id": run_id,
+                    "execution_mode": (
+                        "selection"
+                        if args.selection_only
+                        else "confirmatory"
+                    ),
                     "probe": "B4_output_confidence_logistic",
                     "method_family": "black_box_output_confidence",
                     "k": k,
@@ -276,15 +307,32 @@ def main() -> None:
                     "confidence_feature_names": list(CONFIDENCE_FEATURE_NAMES),
                     "confidence_feature_spec_sha256": feature_spec_sha256,
                     "source_data_sha256": source_hash,
-                    "calibration_data_sha256": calibration_hash,
+                    "reference_data_sha256": reference_hash,
                     "target_data_sha256": target_hash,
                     "operating_threshold": float(threshold),
-                    "requested_max_fpr": args.max_fpr,
-                    "threshold_source": "source_calibration_negatives",
-                    "n_calibration_negative": int(
-                        np.sum(scored["source_calibration"]["labels"] == 0)
+                    "requested_max_reference_alert_rate": args.max_reference_alert_rate,
+                    "threshold_source": "unlabeled_reference_traffic",
+                    "calibration_method": "split_conformal_upper_tail_v1",
+                    "n_reference_calibration": int(
+                        len(scored["reference_calibration"]["scores"])
                     ),
-                    "n_calibration_negative_groups": n_calibration_negative_groups,
+                    "n_reference_groups": n_reference_groups,
+                    "n_reference_holdout": int(
+                        len(scored["reference_holdout"]["scores"])
+                    ),
+                    "n_reference_holdout_groups": n_reference_holdout_groups,
+                    "reference_calibration_alert_rate": compute_alert_rate(
+                        scored["reference_calibration"]["scores"], threshold
+                    ),
+                    "reference_holdout_alert_count": holdout_alerts["alerts"],
+                    "reference_holdout_alert_rate": holdout_alerts["rate"],
+                    "reference_holdout_alert_rate_ci_low": holdout_alerts["ci_low"],
+                    "reference_holdout_alert_rate_ci_high": holdout_alerts["ci_high"],
+                    "reference_holdout_alert_budget_violation": bool(
+                        holdout_alerts["ci_low"] > args.max_reference_alert_rate
+                    ),
+                    "conformal_p_value_resolution": 1.0
+                    / (len(scored["reference_calibration"]["scores"]) + 1.0),
                     "n_train_pos": int(np.sum(selection.y == 1)),
                     "n_train_neg": int(np.sum(selection.y == 0)),
                     "n_train_groups": int(len(np.unique(selection.group_ids))),
@@ -295,20 +343,38 @@ def main() -> None:
                     ].tolist(),
                     "train_question_ids": selection.group_ids.tolist(),
                 }
-                for prefix, split_name in (
-                    ("calibration", "source_calibration"),
-                    ("eval", "source_eval"),
-                    ("test", "source_test"),
-                ):
+                for prefix, split_name in (("eval", "source_eval"),):
                     row.update(
                         _metric_payload(
                             prefix,
                             scored[split_name],
                             threshold,
                             probability_scores=True,
-                            max_fpr=args.max_fpr,
+                            max_alert_rate=args.max_reference_alert_rate,
                         )
                     )
+                if "source_test" in scored:
+                    row.update(
+                        _metric_payload(
+                            "test",
+                            scored["source_test"],
+                            threshold,
+                            probability_scores=True,
+                            max_alert_rate=args.max_reference_alert_rate,
+                        )
+                    )
+                else:
+                    for metric in (
+                        "auroc",
+                        "auprc",
+                        "tpr_at_reference_alert_budget",
+                        "tpr_at_1pct_reference_alert_budget",
+                        "fpr_at_frozen_threshold",
+                        "oracle_tpr_at_requested_fpr",
+                        "brier",
+                        "ece",
+                    ):
+                        row[f"test_{metric}"] = float("nan")
                 if "target_test" in scored:
                     row.update(
                         _metric_payload(
@@ -316,17 +382,17 @@ def main() -> None:
                             scored["target_test"],
                             threshold,
                             probability_scores=True,
-                            max_fpr=args.max_fpr,
+                            max_alert_rate=args.max_reference_alert_rate,
                         )
                     )
                 else:
                     for metric in (
                         "auroc",
                         "auprc",
-                        "recall_at_frozen_fpr",
-                        "recall_at_1pct_fpr",
+                        "tpr_at_reference_alert_budget",
+                        "tpr_at_1pct_reference_alert_budget",
                         "fpr_at_frozen_threshold",
-                        "oracle_recall_at_requested_fpr",
+                        "oracle_tpr_at_requested_fpr",
                         "brier",
                         "ece",
                     ):

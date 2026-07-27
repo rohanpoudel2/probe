@@ -108,7 +108,7 @@ def normalize_monitorbench_artifact(
             "behavior": "cot_distortion",
             "domain": "monitorbench",
             "template": "official_monitorbench",
-            "paraphrase": "original",
+            "presentation": "plain",
             "obfuscation": "none",
         },
     )
@@ -321,7 +321,7 @@ def main() -> None:
     )
     parser.add_argument("--output", required=True)
     parser.add_argument(
-        "--allow_partial_pilot",
+        "--allow_incomplete_suite",
         action="store_true",
         help=(
             "Allow an incomplete official task/stress matrix. Rows are marked ineligible "
@@ -383,7 +383,7 @@ def main() -> None:
     missing = sorted(expected.difference(observed))
     extra = sorted(observed.difference(expected))
     complete_suite = not missing and not extra
-    if not complete_suite and not args.allow_partial_pilot:
+    if not complete_suite and not args.allow_incomplete_suite:
         raise ValueError(
             "Main-study MonitorBench import requires the complete official task/stress "
             f"matrix; missing={missing[:10]}, extra={extra[:10]}"

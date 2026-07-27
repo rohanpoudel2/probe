@@ -1,5 +1,5 @@
-control_features_root: phase6_negative_controls/features
-control_results_root: phase6_negative_controls/results
+control_features_root: results/negative_controls/features
+control_results_root: results/negative_controls/runs
 controls:
   - name: permute_labels
     control_type: permute_labels

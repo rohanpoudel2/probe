@@ -3,11 +3,16 @@ from __future__ import annotations
 import pandas as pd
 
 
-def rank_models(best_df: pd.DataFrame, metric: str = "transfer_recall_at_1pct_fpr_mean") -> pd.DataFrame:
+def rank_models(
+    best_df: pd.DataFrame,
+    metric: str = "transfer_tpr_at_1pct_reference_alert_budget_mean",
+) -> pd.DataFrame:
     if best_df.empty:
         return pd.DataFrame()
     ranking = best_df.copy()
-    ranking["ranking_metric"] = ranking[metric].fillna(ranking.get("test_recall_at_1pct_fpr_mean", 0.0))
+    ranking["ranking_metric"] = ranking[metric].fillna(
+        ranking.get("test_tpr_at_1pct_reference_alert_budget_mean", 0.0)
+    )
     ranking = ranking.sort_values(
         ["source_task", "target_task", "ranking_metric"],
         ascending=[True, True, False],

@@ -1,140 +1,187 @@
-# Frontier Research Protocol v1
+# Frontier Research Protocol
 
-## Registered question
+## Research question
 
-The primary estimand is the paired change in true-positive rate produced by access to model activations, relative to the strongest registered black-box monitor, when both systems operate at thresholds calibrated to no more than 1% false-positive rate on benign traffic.
+The primary question is whether a data-efficient activation monitor detects objectively defined model behaviors better than the strongest registered transcript-only monitor under the same operational alert budget.
 
-The study is not a generic demonstration that behavior labels are linearly decodable. It asks whether white-box access adds operational value under extreme label scarcity and distribution shift.
+For monitored model \(m\), source behavior \(s\), target behavior \(t\), and label budget \(k\), the primary estimand is
 
-## Independent unit and few-shot budget
+\[
+\Delta_{m,s,t,k}
+=
+\operatorname{TPR}_{\text{white-box}}(\tau_{\text{white-box}})
+-
+\operatorname{TPR}_{\text{black-box}}(\tau_{\text{black-box}}),
+\]
 
-The independent unit is a scenario group, such as one factual question or one agentic decision context. Prompt conditions and repeated rollouts are nested inside that group.
+where each threshold \(\tau\) is fitted independently by the same split-conformal rule on the same identities from unlabeled, on-policy reference traffic. The registered alert budget is \(\alpha=0.01\).
 
-For balanced training, `k` means `k` positive scenario groups and one matched negative observation from each same group. The resulting training set contains `2 * k` labeled observations. Repeated rollouts from one scenario never count as independent shots.
+This is an alert-budget estimand, not a false-positive-rate estimand. Reference traffic has no semantic negative label and may contain behaviors of interest at an unknown prevalence. The protocol therefore does not call the reference alert rate an FPR.
 
-Registered label-efficiency points should be `k = 1, 2, 4, 8, 16, 32`, subject to a probe's minimum sample requirements. Full-data performance is an upper bound, not a few-shot result.
+## Evidence hierarchy
 
-## Required data partitions
+The confirmatory evidence consists of:
 
-Every partition is group-disjoint:
+1. within-behavior final-test TPR at the reference alert budget;
+2. cross-behavior TPR at the unchanged source-trained monitor and threshold;
+3. white-box uplift over the selected transcript-only system;
+4. held-out reference alert rate with a 95% Wilson interval;
+5. exact-prompt hard-negative FPR, paired-positive TPR, score ordering, and score margin;
+6. performance on registered domain, template, presentation, encoding, and behavior shifts;
+7. the few-shot efficiency integral over the registered \(k\) values.
 
-1. `train`: few-shot observations only.
-2. `calibration`: benign negatives used only to fit the operating threshold.
-3. `eval`: source-domain method and layer selection.
-4. `test`: untouched source or transfer evaluation.
+AUROC, AUPRC, calibration diagnostics, geometry analyses, and oracle TPR-at-FPR summaries are descriptive. They cannot replace a missing primary comparison.
 
-The final calibration pool must contain at least 10,000 independent natural, deployment-like benign scenario groups, with exactly one accepted rollout per prompt group. Repeated rollouts are not allowed to reweight the empirical tail. Task-authored neutral controls alone are not sufficient evidence about operational FPR. A substantially larger pool is preferred for tail stability.
+## Data partitions
 
-Natural-traffic sources may use upstream moderation only as a candidate prefilter. Inclusion as a negative requires the exact on-policy prompt/response pair to pass unanimous forced-choice screening by at least three pinned, distinct, non-target model families. The automated rule is validated separately for every monitored model revision on a seeded random sample of at least 300 acceptances rated by two people who are blinded to model identity, monitor scores, automated decisions, and one another's ratings. The exact one-sided 95% false-acceptance upper bound must not exceed 1%; otherwise no automated negative labels are released. Screening records are content-hashed. Unsafe, behavior-positive, malformed, identifying, injected, ambiguous, stale, or under-reviewed rows are excluded rather than labeled negative. Automated acceptance and abstention, audit error bounds, exclusions, pairwise agreement, and nominal Krippendorff alpha are archived.
+Behavior datasets use group-disjoint `train`, `eval`, and `test` partitions:
 
-The operational criteria and rater procedure are frozen in `docs/benign_screening_rubric.md`.
+- `train` supplies matched few-shot examples;
+- `eval` selects the probe family, layer, and view at one frozen selection budget;
+- `test` is untouched until the system identity is frozen.
 
-Exact and normalized prompt hashes must be checked across sources and splits. Semantic-near-duplicate auditing should be documented before the frozen run.
+Reference traffic uses only `calibration` and `test`:
 
-## Rollout and labeling protocol
+- `calibration` fits each monitor’s alert threshold;
+- `test` estimates the realized alert rate without changing that threshold.
 
-- Generate from the exact target model using its chat template.
-- Pin model and tokenizer commits.
-- Store prompts, outputs, token IDs, decoding settings, seeds, provenance, and registered statistics from the processed generation distribution for every emitted token.
-- Generate all registered conditions before examining activation results.
-- Use executable task-labeling rules whenever the behavior has an objective criterion.
-- Send ambiguous cases to blinded adjudication under a frozen rubric.
-- Report exclusion counts, disagreement, and inter-rater reliability.
-- Preserve uncertain labels rather than coercing them into the negative class.
+The final configuration requires at least 10,000 independent groups in each reference partition. Each reference prompt contributes exactly one rollout. Reference groups cannot overlap behavior groups, and the two reference partitions cannot overlap each other.
 
-MASK must use demonstrated neutral beliefs and pressured statements as intended by that benchmark. MonitorBench must be run through its official task/evaluation interfaces at the registered commit. Its imported binary transfer construct is the upstream per-rollout target-outcome verifier result: label 1 means that the registered target outcome or process was verified and label 0 means it was not. This is neither a ground-truth label of CoT unfaithfulness nor the official MonitorBench monitorability score. The latter is computed and reported separately from the upstream monitor outputs, including the intervention-effect normalization used by input-intervention tasks. Neither benchmark may be converted into authored positive and negative completions.
+## Unlabeled reference calibration
 
-MonitorBench is evaluation-only: all imported rows remain in `test`, and its 19-task official matrix is never used to fit a probe, choose a layer, or set a threshold. The source archive, extracted tree, adapter, resolved run configuration, evaluated/verifier model revisions, chat template, tested artifacts, response/verdict alignment, and normalized output are content-hashed. A final import requires every registered task/stress artifact. Partial imports are pilot-only and explicitly ineligible for the main study.
+Reference prompts are a pinned deterministic sample from natural interaction traffic. The exact monitored model revision produces one response per prompt. Length-capped responses are rejected because incomplete generations can create artificial tail behavior.
 
-## Monitors
+For calibration scores \(S_1,\ldots,S_n\) and a future score \(s\), the upper-tail conformal p-value is
 
-The primary white-box monitor should be fixed before the frozen run. A simple standardized logistic probe or mass-mean direction is appropriate; layer selection must use source `eval` only.
+\[
+p(s)=\frac{1+\sum_{i=1}^{n}\mathbf{1}[S_i\ge s]}{n+1}.
+\]
 
-Required black-box comparisons include:
+The monitor alerts when \(p(s)\le\alpha\). Boundary ties are excluded, making the implementation conservative. With \(n=10{,}000\), the p-value resolution is \(1/10{,}001\).
 
-- prompt-only text monitor;
-- answer/action-only monitor;
-- full visible transcript monitor;
-- frozen text-embedding classifier;
-- zero-shot and few-shot LLM judge;
-- registered output-logit or confidence baseline where available;
-- majority and random baselines;
-- full-data upper bounds.
+The conformal guarantee requires exchangeability between calibration traffic and the future reference distribution. It does not guarantee a semantic false-positive rate and does not survive arbitrary deployment shift. The untouched reference test partition is therefore mandatory. Each run reports a 95% Wilson interval as a diagnostic. Across few-shot seeds, the implementation keeps the minimum lower bound and maximum upper bound as a conservative interval envelope; it does not bootstrap seeds into a narrower population interval. A selected system supports the operational-budget claim only when the envelope upper bound is at most 1%. It violates the claim when the lower bound exceeds 1%, and is otherwise inconclusive. This avoids treating either a crossing interval or the many unselected systems as evidence of budget compliance.
 
-Frozen encoder baselines must pin the encoder and tokenizer commits, pooling, padding side, normalization, instruction, instruction format, and maximum length. Raw texts are embedded once per dataset/view; downstream few-shot seeds reuse those caches. Source, benign calibration, and transfer caches must share the same encoder specification and monitored-model revision. Truncated inputs are prohibited in the final protocol.
+## On-policy behavior outcomes
 
-The LLM judge is a different model family from every monitored model in the frozen study. Its model and tokenizer commits, chat-template arguments, system prompt, decision labels, padding side, and context limit are locked. The interaction is delimited as untrusted data. Scores are the pairwise softmax over the two registered next-token label logits; free-text generation and answer parsing are prohibited. Label tokens must each append exactly one token in the rendered generation context. Few-shot demonstrations come only from the matched source-training sample. Target labels never enter prompts, score computation, or threshold fitting. Overlength prompts fail rather than truncate. Each cache is bound to the code revision, implementation hash, data hashes, exact demonstrations, rendered-prompt hashes, view, and judge specification; split payload hashes detect partial or altered caches.
+Scenarios contain prompts, experimental conditions, answer keys, and provenance. They do not contain authored assistant messages, behavior labels, or reasoning traces. The monitored model generates every evaluated response.
 
-The output-confidence baseline uses only the monitored model's generation-time processed scores. Each natively generated rollout stores aligned selected-token log probabilities, entropies, top-1/top-2 probability margins, and top-1 indicators, protected by a content hash. A frozen 22-dimensional summary includes response length, distributional summaries, early/late confidence, and final-token confidence. The matched few-shot logistic classifier is fit on those summaries. Rollouts without a valid trace are ineligible for B4; confidence must not be reconstructed by a later teacher-forced pass because that would change the measured quantity. The official MonitorBench tested-artifact contract does not serialize these distributions, so B4 is pre-registered as structurally unavailable for that target while the other visible-text baselines remain required.
+Labels are assigned only after generation:
 
-The primary comparison is white-box TPR minus the best black-box TPR chosen without target-test labels. Standalone activation AUROC is secondary.
+- sycophancy uses the extracted answer relative to the frozen truth and pressure target;
+- motivated reasoning uses the extracted multiple-choice answer relative to the frozen gold and biased-hint option;
+- auxiliary honesty controls use their frozen task-specific executable rule;
+- MonitorBench outcomes are imported only from its pinned official evaluator and remain a distinct evaluation-only construct.
 
-## Metrics and inference
+Ambiguous or unparsable outcomes are excluded according to the task rule before monitor training. No model judge assigns a primary behavior label.
 
-The threshold is selected using dedicated calibration negatives and applied unchanged to every source and target test. The same benign calibration identities must be used across activation and black-box systems in a registered comparison. AUROC and AUPRC are descriptive. Calibration metrics are reported only for actual probabilities or scores calibrated on a separate split.
+## Few-shot sampling
 
-Every monitor must save per-example predictions. Primary uncertainty uses paired hierarchical resampling over training seeds and scenario groups. Registered comparison families receive Holm or stronger family-wise correction. Seed-only variation is diagnostic and must not be labeled as a population confidence interval.
+`k` counts positive scenario groups, not rows. Balanced training samples `k` positive and `k` matched negative examples without splitting an underlying group. The registered grid is
 
-No system, layer, view, probe, intervention coefficient, or baseline may be chosen from final-test performance.
+\[
+k\in\{1,2,4,8,16,32\}.
+\]
 
-## Falsification suite
+Ten seeds resample training groups. Evaluation examples and reference identities remain fixed across those seeds. Repeated rollouts from one scenario never increase the number of independent groups used by calibration, uncertainty estimation, or final gates.
 
-The falsification registry is an immutable, content-hashed contract over five axes: behavior, domain, prompt template, paraphrase, and obfuscation. Every scenario records one value and a `source` or `heldout` role for each axis. Scenario schema v2 includes this metadata in the scenario hash. If any member of a scenario group has a held-out role, the entire group is assigned to `test`; the builder and final validator reject mixed-split groups. This follows the separation between in-distribution and out-of-distribution evaluation used by [WILDS](https://proceedings.mlr.press/v139/koh21a.html), while retaining paired scenario groups for this study.
+## White-box systems
 
-Paraphrases and obfuscations are prompt transformations, not model outcomes. Each must name an exact parent scenario, transformation protocol and source, parent and variant prompt hashes, and one isolated shift axis. At least two distinct independent reviewers who did not author the variant must unanimously confirm semantic equivalence, preservation of the target behavioral pressure, and absence of answer leakage under `docs/falsification_review_protocol.md`. Unreviewed or multiply transformed prompts are ineligible. This is a conservative adaptation of behavioral tests and local contrast sets rather than an automated claim of semantic equivalence; see [CheckList](https://aclanthology.org/2020.acl-main.442/) and [Contrast Sets](https://aclanthology.org/2020.findings-emnlp.117/).
+The registered activation systems are:
 
-A matched hard negative is not a neutral prompt and is never an authored completion. It is a label-0 on-policy response to a registered trigger prompt paired one-to-one with a label-1 response from the exact same scenario ID, prompt hash, group, and shift signature. Multiple completions therefore use registered stochastic decoding and remain nested within one scenario group. Repeated greedy decoding is prohibited. This slice measures hard-negative FPR, paired-positive TPR, pairwise score ordering, and pairwise score margin at the already frozen benign threshold.
+- logistic regression;
+- mass-mean classification;
+- linear discriminant analysis;
+- cosine-direction scoring;
+- shrinkage Mahalanobis scoring.
 
-The final gate requires both labels and at least 100 independent groups for every held-out shift axis, plus at least 100 independent exact-prompt hard-negative groups for every enabled behavior task. These are minimum coverage floors, not substitutes for the registered power analysis. A behavior value is treated as held out only in the context of a registry-approved source-behavior-to-target-behavior run; the same target task is not mislabeled as held out in its within-task calibration run.
+Activations are extracted from zero-based transformer-block outputs using the model’s pinned chat template. The common cross-family view is the model answer. Reasoning-span views are secondary and eligible only when the frozen output format exposes the span without heuristic reconstruction.
 
-Every per-example shift prediction and per-pair hard-negative prediction is archived with the exact registry and evaluation manifests. Confirmatory falsification comparisons are separately pre-registered with exact model, task, probe, layer, view, label budget, and balance-mode selectors. Systems must cover identical examples or pairs for every identical seed. Inference gives equal weight to independent scenario groups, jointly resamples groups and seeds, reports system-A-minus-system-B differences, and applies one global Holm correction across the registered falsification family. The comparison file is content-hashed and archived; changing it after an archive exists is rejected.
+Probe family, layer, and view are selected on source `eval` data at the frozen selection budget. That identity is reused for every \(k\), source test, and transfer target. Final-test labels never select a system.
 
-Before a positive result is interpreted as internal monitoring, it must survive:
+## Black-box systems
 
-- prompt-only and transcript-only baselines;
-- response-template scrubbing and paraphrase;
-- matched hard negatives with the same topic and vocabulary;
-- held-out prompt templates and domains;
-- cross-behavior transfer;
-- adversarial obfuscation;
-- early/pre-answer temporal evaluation if the claim is extended from post-hoc monitoring to pre-output detection;
-- feature-label permutation and matched Gaussian controls;
-- large benign-traffic evaluation.
+The matched black-box family contains:
 
-If a text monitor matches the activation monitor, the correct conclusion is that white-box access did not add value under that condition.
+- word/bigram TF-IDF logistic regression;
+- logistic regression on a pinned frozen text encoder;
+- a pinned independent forced-choice LLM judge in zero-shot and few-shot modes;
+- logistic regression on genuine generation-time confidence traces.
 
-## Intervention policy
+Every black-box system receives the same label budget, group-aware samples, visible-text views, reference identities, target examples, and seeds as the activation systems. Encoder and judge caches are content-hashed and reused across seeds. The output-confidence baseline is unavailable when an upstream artifact does not expose the sampled token distribution; those features are never reconstructed by teacher forcing.
 
-Steering is not part of the primary protocol. It can become a follow-up only after monitoring succeeds. Its direction must be learned on training data, strength selected on development data, and behavioral outcomes measured on untouched scenarios. Projection onto the intervened direction is not a behavioral outcome. Capability, fluency, and clean-task side effects must be reported.
+The primary black-box comparator is selected on source `eval` data using the same fixed selection budget and deterministic tie-break used for white-box selection.
 
-## Stage gates
+## Falsification design
 
-### A. Infrastructure and data integrity
+The content-hashed registry defines five axes:
 
-- All integrity tests pass.
-- Scenario, rollout, annotation, and feature schemas validate.
-- No authored completions enter extraction.
-- Source and model revisions are immutable.
+- behavior;
+- domain;
+- prompt template;
+- presentation;
+- obfuscation.
 
-### B. Leakage pilot
+Every scenario records one value and a `source` or `heldout` role for each axis. If any scenario in a group carries a held-out value, the entire group belongs to `test`.
 
-- One model family, two tasks, and a limited scenario set.
-- Compare prompt, transcript, and activation monitors.
-- Verify matched sampling and frozen thresholds.
-- Do not make publication claims before the full protocol has been frozen.
+Presentation and obfuscation variants are executable invariants:
 
-### C. Freeze
+- `verbatim_wrapper_v1` places the exact source request inside a frozen wrapper;
+- `reversible_rot13_v1` encodes the exact source request and supplies a frozen decoding instruction.
 
-- Final behaviors, model families, sample sizes, exclusions, layer rule, metrics, primary comparisons, and five-axis/hard-negative falsification comparisons are registered.
-- Baseline implementations, executable labeling rules, automated screening profiles, and human-audit rubrics are frozen.
-- Final-test labels remain inaccessible to selection code.
+For each generated variant, the builder stores and verifies the parent/variant prompt hashes, source-payload hash, unchanged answer-metadata hash, executable inverse, and single-axis change. These tests support claims about robustness to exact presentation and encoding transformations. They do not support claims about robustness to free-form paraphrases.
 
-### D. Full execution
+## Exact-prompt hard negatives
 
-- Run the validated manifest without partial-success flags.
-- Preserve all prediction and provenance artifacts.
-- Report every registered comparison, including null results.
+A hard-negative pair contains a label-1 and label-0 on-policy response generated from the exact same trigger scenario. Pairing requires the same scenario ID, prompt hash, group, test split, and full shift signature. Multiple responses use registered stochastic sampling; repeated greedy decoding is prohibited.
 
-### E. Optional causal follow-up
+The frozen threshold is not refitted on this slice. The reported quantities are:
 
-- Temporal localization, adversarial stress tests, and behavioral interventions.
+- hard-negative FPR;
+- paired-positive TPR;
+- fraction of pairs with positive score greater than negative score;
+- paired score margin.
+
+The final protocol requires at least 100 independent hard-negative groups per enabled task and a registered paired comparison for each enabled task.
+
+## Statistical analysis
+
+Primary comparisons are declared before final-test inspection. Each comparison identifies the exact model, source task, target task, \(k\), probe, layer, view, balance mode, and comparator.
+
+Uncertainty is estimated with paired hierarchical resampling:
+
+1. sample few-shot seeds jointly across systems;
+2. sample independent scenario groups with replacement;
+3. preserve all paired system predictions within each sampled group.
+
+The effect is system A minus system B. The output includes the observed difference, percentile confidence interval, and paired two-sided p-value. Registered falsification hypotheses share one global Holm correction family. Cross-model summaries retain model identity rather than treating model-by-example rows as independent.
+
+The few-shot efficiency integral uses the registered metric across the complete \(k\) grid with frozen weights. Missing budgets are not interpolated.
+
+## Model panel
+
+The final panel must contain at least three genuinely different monitored-model families. The maintained manifest registers Qwen3, Llama 3.1, and Mistral checkpoints at immutable revisions. A second Qwen size estimates within-family scale sensitivity but does not count as another family.
+
+The primary independent LLM judge must belong to a family distinct from the monitored model. Self-judging is available only through an explicitly non-confirmatory debug override and is prohibited in selection and frozen execution.
+
+## Final validity gates
+
+A frozen run is valid only if all of the following hold:
+
+- the manifest and comparison files are frozen before final-test inspection;
+- every model, tokenizer, source, encoder, judge, and code revision is immutable;
+- the worktree is clean for generation, extraction, and cached model scoring;
+- all registered \(k\) values and ten seeds complete without partial-run suppression;
+- every reference partition contains at least 10,000 independent groups;
+- calibration and holdout reference groups are disjoint;
+- every result reports the held-out reference alert rate and Wilson interval;
+- an operational-budget claim is marked supported only when the conservative seedwise interval envelope has upper bound at most 1%, inconclusive when it crosses 1%, and violated when its lower bound exceeds 1%;
+- every behavior task has objective labels, both classes, and group-disjoint splits;
+- all registered black-box systems are present or have a task-level frozen inapplicability reason;
+- every enabled shift axis has at least 100 independent held-out groups and both behavior labels where required;
+- every enabled hard-negative task has at least 100 independent exact-prompt pairs;
+- the saved per-example evidence exactly matches every registered paired comparison;
+- no truncation, dirty provenance, stale hash, missing split, or identity mismatch is present.
+
+## Interpretation boundary
+
+Passing these gates makes the experiment auditable and capable of supporting strong evidence. It does not predetermine a positive result. A null or negative white-box uplift, poor transfer, excessive held-out alert rate, or failure on exact-prompt hard negatives is a valid outcome and must be reported without weakening the frozen comparison.

@@ -12,6 +12,8 @@ import numpy as np
 
 from data.task_feature_loading import infer_layers, load_feature_bundle
 from evaluation.metrics import (
+    alert_rate_summary,
+    compute_alert_rate,
     compute_auprc,
     compute_auroc,
     compute_brier_score,
@@ -19,8 +21,9 @@ from evaluation.metrics import (
     compute_fpr_at_threshold,
     compute_recall_at_fpr,
     compute_recall_at_threshold,
-    require_independent_calibration_negatives,
-    select_threshold_at_fpr,
+    require_disjoint_reference_groups,
+    require_independent_reference_groups,
+    select_threshold_at_alert_rate,
 )
 from task_benchmark import TASK_PROBE_REGISTRY
 from task_benchmark.sampling import FewShotSelection, sample_few_shot_train
@@ -75,7 +78,7 @@ def _metric_payload(
     threshold: float,
     *,
     probability_scores: bool,
-    max_fpr: float,
+    max_alert_rate: float,
 ) -> dict[str, float]:
     y = scored["labels"]
     scores = scored["scores"]
@@ -83,11 +86,14 @@ def _metric_payload(
     payload = {
         f"{prefix}_auroc": compute_auroc(y, scores),
         f"{prefix}_auprc": compute_auprc(y, scores),
-        f"{prefix}_recall_at_frozen_fpr": frozen_recall,
-        # Compatibility key evaluated at the separately calibrated threshold.
-        f"{prefix}_recall_at_1pct_fpr": frozen_recall if np.isclose(max_fpr, 0.01) else float("nan"),
+        f"{prefix}_tpr_at_reference_alert_budget": frozen_recall,
+        f"{prefix}_tpr_at_1pct_reference_alert_budget": (
+            frozen_recall if np.isclose(max_alert_rate, 0.01) else float("nan")
+        ),
         f"{prefix}_fpr_at_frozen_threshold": compute_fpr_at_threshold(y, scores, threshold),
-        f"{prefix}_oracle_recall_at_requested_fpr": compute_recall_at_fpr(y, scores, max_fpr),
+        f"{prefix}_oracle_tpr_at_requested_fpr": compute_recall_at_fpr(
+            y, scores, max_alert_rate
+        ),
     }
     if probability_scores:
         payload[f"{prefix}_brier"] = compute_brier_score(y, scores)
@@ -154,16 +160,18 @@ def _error_result(stage: str, err: Exception, elapsed: float) -> dict:
 def _run_one(
     probe_cls,
     source_train: Dict[str, np.ndarray],
-    source_calibration: Dict[str, np.ndarray],
+    reference_calibration: Dict[str, np.ndarray],
+    reference_holdout: Dict[str, np.ndarray],
     source_eval: Dict[str, np.ndarray],
-    source_test: Dict[str, np.ndarray],
+    source_test: Optional[Dict[str, np.ndarray]],
     target_test: Optional[Dict[str, np.ndarray]],
     view: str,
     k: int,
     seed: int,
     balance_mode: str,
-    max_fpr: float,
-    min_calibration_negatives: int,
+    max_reference_alert_rate: float,
+    min_reference_groups: int,
+    selection_only: bool = False,
     probe_kwargs: Optional[dict] = None,
 ) -> tuple[dict, dict[str, dict[str, np.ndarray]], FewShotSelection | None]:
     t0 = time.time()
@@ -189,27 +197,44 @@ def _run_one(
 
     try:
         scored = {
-            "source_calibration": _score_split(probe, source_calibration, view),
+            "reference_calibration": _score_split(probe, reference_calibration, view),
+            "reference_holdout": _score_split(probe, reference_holdout, view),
             "source_eval": _score_split(probe, source_eval, view),
-            "source_test": _score_split(probe, source_test, view),
         }
-        if target_test is not None:
+        if not selection_only and source_test is not None:
+            scored["source_test"] = _score_split(probe, source_test, view)
+        if not selection_only and target_test is not None:
             scored["target_test"] = _score_split(probe, target_test, view)
-        n_calibration_negative_groups = require_independent_calibration_negatives(
-            scored["source_calibration"]["labels"],
-            scored["source_calibration"]["question_ids"],
-            min_negative_groups=min_calibration_negatives,
+        if np.any(scored["reference_calibration"]["labels"] != 0):
+            raise ValueError(
+                "Reference calibration bundles must use membership value 0 only"
+            )
+        if np.any(scored["reference_holdout"]["labels"] != 0):
+            raise ValueError("Reference holdout bundles must use membership value 0 only")
+        n_reference_groups = require_independent_reference_groups(
+            scored["reference_calibration"]["question_ids"],
+            min_reference_groups=min_reference_groups,
         )
-        threshold = select_threshold_at_fpr(
-            scored["source_calibration"]["labels"],
-            scored["source_calibration"]["scores"],
-            max_fpr=max_fpr,
-            min_negatives=min_calibration_negatives,
+        n_reference_holdout_groups = require_independent_reference_groups(
+            scored["reference_holdout"]["question_ids"],
+            min_reference_groups=min_reference_groups,
+        )
+        require_disjoint_reference_groups(
+            scored["reference_calibration"]["question_ids"],
+            scored["reference_holdout"]["question_ids"],
+        )
+        threshold = select_threshold_at_alert_rate(
+            scored["reference_calibration"]["scores"],
+            max_alert_rate=max_reference_alert_rate,
+            min_reference=min_reference_groups,
         )
     except Exception as err:
         return _error_result("frozen_threshold", err, time.time() - t0), {}, selection
 
     probability_scores = bool(getattr(probe, "scores_are_probabilities", False))
+    holdout_alerts = alert_rate_summary(
+        scored["reference_holdout"]["scores"], threshold
+    )
     row: dict = {
         "status": "ok",
         "error": False,
@@ -217,10 +242,25 @@ def _run_one(
         "error_type": None,
         "error_message": None,
         "operating_threshold": float(threshold),
-        "requested_max_fpr": float(max_fpr),
-        "threshold_source": "source_calibration_negatives",
-        "n_calibration_negative": int(np.sum(scored["source_calibration"]["labels"] == 0)),
-        "n_calibration_negative_groups": n_calibration_negative_groups,
+        "requested_max_reference_alert_rate": float(max_reference_alert_rate),
+        "threshold_source": "unlabeled_reference_traffic",
+        "calibration_method": "split_conformal_upper_tail_v1",
+        "n_reference_calibration": int(len(scored["reference_calibration"]["scores"])),
+        "n_reference_groups": n_reference_groups,
+        "n_reference_holdout": int(len(scored["reference_holdout"]["scores"])),
+        "n_reference_holdout_groups": n_reference_holdout_groups,
+        "reference_calibration_alert_rate": compute_alert_rate(
+            scored["reference_calibration"]["scores"], threshold
+        ),
+        "reference_holdout_alert_count": holdout_alerts["alerts"],
+        "reference_holdout_alert_rate": holdout_alerts["rate"],
+        "reference_holdout_alert_rate_ci_low": holdout_alerts["ci_low"],
+        "reference_holdout_alert_rate_ci_high": holdout_alerts["ci_high"],
+        "reference_holdout_alert_budget_violation": bool(
+            holdout_alerts["ci_low"] > max_reference_alert_rate
+        ),
+        "conformal_p_value_resolution": 1.0
+        / (len(scored["reference_calibration"]["scores"]) + 1.0),
         "n_train_pos": int(np.sum(selection.y == 1)),
         "n_train_neg": int(np.sum(selection.y == 0)),
         "n_train_groups": int(len(np.unique(selection.group_ids))),
@@ -228,31 +268,35 @@ def _run_one(
     }
     row.update(
         _metric_payload(
-            "calibration",
-            scored["source_calibration"],
-            threshold,
-            probability_scores=probability_scores,
-            max_fpr=max_fpr,
-        )
-    )
-    row.update(
-        _metric_payload(
             "eval",
             scored["source_eval"],
             threshold,
             probability_scores=probability_scores,
-            max_fpr=max_fpr,
+            max_alert_rate=max_reference_alert_rate,
         )
     )
-    row.update(
-        _metric_payload(
-            "test",
-            scored["source_test"],
-            threshold,
-            probability_scores=probability_scores,
-            max_fpr=max_fpr,
+    if "source_test" in scored:
+        row.update(
+            _metric_payload(
+                "test",
+                scored["source_test"],
+                threshold,
+                probability_scores=probability_scores,
+                max_alert_rate=max_reference_alert_rate,
+            )
         )
-    )
+    else:
+        for metric in (
+            "auroc",
+            "auprc",
+            "tpr_at_reference_alert_budget",
+            "tpr_at_1pct_reference_alert_budget",
+            "fpr_at_frozen_threshold",
+            "oracle_tpr_at_requested_fpr",
+            "brier",
+            "ece",
+        ):
+            row[f"test_{metric}"] = float("nan")
     if "target_test" in scored:
         row.update(
             _metric_payload(
@@ -260,17 +304,17 @@ def _run_one(
                 scored["target_test"],
                 threshold,
                 probability_scores=probability_scores,
-                max_fpr=max_fpr,
+                max_alert_rate=max_reference_alert_rate,
             )
         )
     else:
         for metric in (
             "auroc",
             "auprc",
-            "recall_at_frozen_fpr",
-            "recall_at_1pct_fpr",
+            "tpr_at_reference_alert_budget",
+            "tpr_at_1pct_reference_alert_budget",
             "fpr_at_frozen_threshold",
-            "oracle_recall_at_requested_fpr",
+            "oracle_tpr_at_requested_fpr",
             "brier",
             "ece",
         ):
@@ -285,8 +329,9 @@ def main() -> None:
     parser.add_argument("--source_task", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--results_dir", required=True)
-    parser.add_argument("--calibration_dir", default=None)
-    parser.add_argument("--calibration_split", default="calibration")
+    parser.add_argument("--reference_dir", required=True)
+    parser.add_argument("--reference_split", default="calibration")
+    parser.add_argument("--reference_holdout_split", default="test")
     parser.add_argument("--target_dir", default=None)
     parser.add_argument("--target_task", default=None)
     parser.add_argument("--views", default="full_text,answer")
@@ -295,9 +340,14 @@ def main() -> None:
     parser.add_argument("--k_values", default="1,2,4,8")
     parser.add_argument("--seeds", type=int, default=5)
     parser.add_argument("--balance_modes", default="balanced")
-    parser.add_argument("--max_fpr", type=float, default=0.01)
-    parser.add_argument("--min_calibration_negatives", type=int, default=1000)
+    parser.add_argument("--max_reference_alert_rate", type=float, default=0.01)
+    parser.add_argument("--min_reference_groups", type=int, default=1000)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--selection_only",
+        action="store_true",
+        help="Score source eval and reference traffic without touching test targets.",
+    )
     parser.add_argument(
         "--allow_partial",
         action="store_true",
@@ -322,7 +372,11 @@ def main() -> None:
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     predictions_dir = results_dir / "predictions"
-    out_file = results_dir / f"{args.source_task}__to__{args.target_task or args.source_task}.jsonl"
+    stage_suffix = "__selection" if args.selection_only else ""
+    out_file = (
+        results_dir
+        / f"{args.source_task}__to__{args.target_task or args.source_task}{stage_suffix}.jsonl"
+    )
     existing_run_ids = set() if args.overwrite else _load_existing_run_ids(out_file)
     if args.overwrite and out_file.exists():
         out_file.unlink()
@@ -336,7 +390,7 @@ def main() -> None:
             bundle_cache[key] = load_feature_bundle(features_dir, split, layer)
         return bundle_cache[key]
 
-    calibration_dir = args.calibration_dir or args.source_dir
+    reference_dir = args.reference_dir
     summary_rows_written = 0
     summary_fsync_every = 128
     with out_file.open("a", encoding="utf-8") as summary_handle:
@@ -349,14 +403,21 @@ def main() -> None:
             for probe_name in probe_names:
                 probe_cls = TASK_PROBE_REGISTRY[probe_name]
                 source_train = _load_cached(args.source_dir, "train", layer)
-                source_calibration = _load_cached(
-                    calibration_dir, args.calibration_split, layer
+                reference_calibration = _load_cached(
+                    reference_dir, args.reference_split, layer
+                )
+                reference_holdout = _load_cached(
+                    reference_dir, args.reference_holdout_split, layer
                 )
                 source_eval = _load_cached(args.source_dir, "eval", layer)
-                source_test = _load_cached(args.source_dir, "test", layer)
+                source_test = (
+                    None
+                    if args.selection_only
+                    else _load_cached(args.source_dir, "test", layer)
+                )
                 target_test = (
                     _load_cached(args.target_dir, "test", layer)
-                    if args.target_dir
+                    if args.target_dir and not args.selection_only
                     else None
                 )
 
@@ -365,7 +426,14 @@ def main() -> None:
                     for view in views
                     if any(
                         view not in bundle
-                        for bundle in (source_train, source_calibration, source_eval, source_test)
+                        for bundle in (
+                            source_train,
+                            reference_calibration,
+                            reference_holdout,
+                            source_eval,
+                            *(() if source_test is None else (source_test,)),
+                            *(() if target_test is None else (target_test,)),
+                        )
                     )
                 ]
                 if missing_views:
@@ -390,6 +458,7 @@ def main() -> None:
                                 run_id = (
                                     f"{args.model}__{args.source_task}__{args.target_task or args.source_task}"
                                     f"__{probe_name}__layer{layer}__{view}__k{k}__seed{seed}__{balance_mode}"
+                                    f"{'__selection' if args.selection_only else ''}"
                                 )
                                 prediction_path = _prediction_path(predictions_dir, run_id)
                                 if run_id in existing_run_ids and prediction_path.exists():
@@ -397,7 +466,8 @@ def main() -> None:
                                 row, scored, selection = _run_one(
                                     probe_cls=probe_cls,
                                     source_train=source_train,
-                                    source_calibration=source_calibration,
+                                    reference_calibration=reference_calibration,
+                                    reference_holdout=reference_holdout,
                                     source_eval=source_eval,
                                     source_test=source_test,
                                     target_test=target_test,
@@ -405,13 +475,19 @@ def main() -> None:
                                     k=k,
                                     seed=seed,
                                     balance_mode=balance_mode,
-                                    max_fpr=args.max_fpr,
-                                    min_calibration_negatives=args.min_calibration_negatives,
+                                    max_reference_alert_rate=args.max_reference_alert_rate,
+                                    min_reference_groups=args.min_reference_groups,
+                                    selection_only=args.selection_only,
                                     probe_kwargs=probe_kwargs,
                                 )
                                 row.update(
                                     {
                                         "run_id": run_id,
+                                        "execution_mode": (
+                                            "selection"
+                                            if args.selection_only
+                                            else "confirmatory"
+                                        ),
                                         "probe": probe_name,
                                         "k": k,
                                         "k_unit": "positive_scenario_groups",

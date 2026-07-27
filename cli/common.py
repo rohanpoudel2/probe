@@ -60,3 +60,28 @@ def resolve_torch_device(requested: str = "auto") -> str:
             raise ValueError("MPS requested but torch.backends.mps is not available")
         return "mps"
     raise ValueError(f"Unsupported device {requested!r}; expected auto|cpu|mps|cuda|cuda:N")
+
+
+def inference_dtype_for_device(resolved_device: str):
+    """Use a broadly supported, memory-efficient inference dtype on MPS."""
+
+    if resolved_device == "mps":
+        import torch
+
+        return torch.float16
+    return "auto"
+
+
+def bounded_batch_size_for_device(
+    batch_size: int,
+    resolved_device: str,
+    *,
+    mps_max_batch_size: int = 1,
+) -> int:
+    """Cap padded transformer batches on unified-memory Apple devices."""
+
+    if batch_size < 1 or mps_max_batch_size < 1:
+        raise ValueError("Batch sizes must be positive")
+    if resolved_device == "mps":
+        return min(batch_size, mps_max_batch_size)
+    return batch_size

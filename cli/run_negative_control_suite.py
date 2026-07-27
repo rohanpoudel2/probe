@@ -14,6 +14,11 @@ def main() -> None:
     parser.add_argument("--base_config", required=True)
     parser.add_argument("--controls_config", required=True)
     parser.add_argument(
+        "--main_results_dir",
+        default=None,
+        help="Optional main-results override used when writing the control report.",
+    )
+    parser.add_argument(
         "--device",
         default=None,
         help="Forwarded to downstream benchmark runs (auto|cpu|cuda|cuda:N|mps).",
@@ -62,7 +67,17 @@ def main() -> None:
             protocol_cmd.extend(["--device", args.device])
         run_cmd(protocol_cmd)
 
-    run_cmd([sys.executable, "-m", "cli.build_negative_control_report", "--main_results_dir", str(base_cfg["results_dir"]), "--controls_root", str(base_results_root)])
+    run_cmd(
+        [
+            sys.executable,
+            "-m",
+            "cli.build_negative_control_report",
+            "--main_results_dir",
+            str(args.main_results_dir or base_cfg["results_dir"]),
+            "--controls_root",
+            str(base_results_root),
+        ]
+    )
 
 
 if __name__ == "__main__":

@@ -92,17 +92,17 @@ def _fetch_honesty_control_raw(root: Path, cfg: dict) -> None:
         _save_dataset(outdir / filename, dataset)
 
 
-def _fetch_benign_calibration_raw(root: Path, cfg: dict) -> None:
+def _fetch_reference_traffic_raw(root: Path, cfg: dict) -> None:
     """Stream a reproducible content-hash sample without downloading the full corpus."""
 
     dataset_cfg = cfg.get("dataset", {})
     revision = _require_commit_revision(
         dataset_cfg.get("revision"),
-        dataset_cfg.get("repo", "benign calibration source"),
+        dataset_cfg.get("repo", "reference traffic source"),
     )
     max_rows = int(dataset_cfg.get("raw_candidate_rows", 50_000))
     if max_rows < 1:
-        raise ValueError("benign_calibration_raw.raw_candidate_rows must be positive")
+        raise ValueError("reference_traffic_raw.raw_candidate_rows must be positive")
     dataset = load_dataset(
         path=dataset_cfg["repo"],
         revision=revision,
@@ -130,12 +130,12 @@ def _fetch_benign_calibration_raw(root: Path, cfg: dict) -> None:
         item[3] for item in sorted(heap, key=lambda item: (-item[0], item[1], item[2]))
     ]
     if not selected:
-        raise ValueError("Pinned benign-calibration source returned no rows")
+        raise ValueError("Pinned reference-traffic source returned no rows")
     _write_jsonl(
-        root / "benign_calibration_raw" / "wildchat_train_sample.jsonl", selected
+        root / "reference_traffic_raw" / "wildchat_train_sample.jsonl", selected
     )
     print(
-        f"saved {root / 'benign_calibration_raw' / 'wildchat_train_sample.jsonl'} "
+        f"saved {root / 'reference_traffic_raw' / 'wildchat_train_sample.jsonl'} "
         f"({len(selected)} deterministic sampled rows)"
     )
 
@@ -330,7 +330,7 @@ def main() -> None:
             "sycophancy_eval",
             "motivated_reasoning_raw",
             "honesty_control_raw",
-            "benign_calibration_raw",
+            "reference_traffic_raw",
             "cot_monitorability_raw",
         ],
     )
@@ -348,7 +348,7 @@ def main() -> None:
         "sycophancy_eval": _fetch_sycophancy_eval,
         "motivated_reasoning_raw": _fetch_motivated_reasoning_raw,
         "honesty_control_raw": _fetch_honesty_control_raw,
-        "benign_calibration_raw": _fetch_benign_calibration_raw,
+        "reference_traffic_raw": _fetch_reference_traffic_raw,
         "cot_monitorability_raw": _fetch_cot_monitorability_raw,
     }
 

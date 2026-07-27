@@ -10,16 +10,13 @@ from tasks.jsonl_utils import read_jsonl, require_fields, rollout_metadata
 class MotivatedReasoningTask(BehaviorTask):
     spec = TaskSpec(
         name="motivated_reasoning",
-        primary_metric="recall_at_frozen_fpr",
         label_semantics={0: "unbiased_or_control", 1: "motivated_reasoning"},
         grouped_split_key="question_id",
-        default_spans=["full_text", "hint_context", "reasoning", "reasoning_early", "reasoning_mid", "reasoning_late", "answer"],
-        notes="Transfer family; labels are assigned from generated answers under biased versus neutral conditions.",
     )
 
     def load(self, path: Optional[str] = None) -> List[TaskExample]:
         if path is None:
-            raise ValueError("MotivatedReasoningTask.load requires a JSONL path in Phase 1.")
+            raise ValueError("MotivatedReasoningTask.load requires a JSONL path.")
 
         rows = read_jsonl(path)
         examples: List[TaskExample] = []
