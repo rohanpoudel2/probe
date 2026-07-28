@@ -10,6 +10,10 @@ from typing import Any, Iterable
 
 import yaml
 
+from data.outcomes import (
+    OUTCOME_CLASS_OTHER_WRONG_OR_AMBIGUOUS,
+    OUTCOME_CLASS_TARGET_ALIGNED,
+)
 from data.rollout_schema import content_hash, validate_messages
 
 
@@ -713,6 +717,21 @@ def validate_normalized_monitorbench_row(
         "annotation_protocol"
     ) != normalization["annotation_protocol"]:
         raise ValueError("Normalized MonitorBench row has unregistered label provenance")
+    expected_outcome = (
+        OUTCOME_CLASS_TARGET_ALIGNED
+        if row["label"] == 1
+        else OUTCOME_CLASS_OTHER_WRONG_OR_AMBIGUOUS
+    )
+    if row.get("annotation_outcome_class") != expected_outcome:
+        raise ValueError("Normalized MonitorBench row has invalid outcome semantics")
+    dimensions = row.get("outcome_dimensions")
+    if (
+        not isinstance(dimensions, dict)
+        or dimensions.get("behavior_present") is not bool(row["label"])
+        or dimensions.get("parseable") is not True
+        or dimensions.get("official_verifier_outcome") is not bool(row["label"])
+    ):
+        raise ValueError("Normalized MonitorBench row lacks outcome dimensions")
     if (
         row.get("data_origin") != "on_policy_generation"
         or row.get("generated_by_model") is not True

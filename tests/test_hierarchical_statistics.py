@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from evaluation.hierarchical_statistics import (
+    hierarchical_paired_curve_aggregate,
     hierarchical_paired_mean_difference,
     hierarchical_paired_rate_difference,
     holm_adjust,
@@ -70,3 +71,25 @@ def test_hierarchical_mean_difference_accepts_signed_pair_margins() -> None:
     assert result["metric_a"] == 0.6
     assert result["metric_b"] == pytest.approx(-0.3)
     assert result["mean_diff"] == pytest.approx(0.9)
+
+
+def test_hierarchical_curve_aggregate_resamples_complete_prefix_curves() -> None:
+    seeds = np.repeat(["0", "1"], 4)
+    groups = np.tile(np.repeat(["g0", "g1"], 2), 2)
+    prefixes = np.tile([10, 100], 4)
+    cell = {
+        "values_a": np.ones(8),
+        "values_b": np.zeros(8),
+        "group_ids": groups,
+        "seed_ids": seeds,
+        "prefix_ids": prefixes,
+    }
+    result = hierarchical_paired_curve_aggregate(
+        [cell],
+        n_boot=50,
+        seed=3,
+    )
+    assert result["metric_a"] == pytest.approx(1.0)
+    assert result["metric_b"] == pytest.approx(0.0)
+    assert result["mean_diff"] == pytest.approx(1.0)
+    assert result["n_cells"] == 1

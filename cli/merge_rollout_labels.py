@@ -6,6 +6,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from data.outcomes import (
+    EXCLUDED_OUTCOME_CLASSES,
+    OUTCOME_CLASS_CORRECT_NON_TARGET,
+    OUTCOME_CLASS_OTHER_WRONG_OR_AMBIGUOUS,
+    OUTCOME_CLASS_TARGET_ALIGNED,
+)
 from data.reference_traffic import (
     REFERENCE_LABEL_SOURCE,
     REFERENCE_PROTOCOL,
@@ -31,6 +37,11 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _annotation_map(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     annotations: dict[str, dict[str, Any]] = {}
+    valid_outcomes = {
+        OUTCOME_CLASS_CORRECT_NON_TARGET,
+        OUTCOME_CLASS_OTHER_WRONG_OR_AMBIGUOUS,
+        OUTCOME_CLASS_TARGET_ALIGNED,
+    }
     for row in rows:
         rollout_id = str(row.get("rollout_id", "")).strip()
         if not rollout_id:
@@ -46,6 +57,34 @@ def _annotation_map(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
                 )
         elif label not in {0, 1}:
             raise ValueError(f"Annotation {rollout_id} requires binary label 0 or 1")
+        is_reference = (
+            row.get("label_source") == REFERENCE_LABEL_SOURCE
+            and row.get("annotation_protocol") == REFERENCE_PROTOCOL
+        )
+        outcome_class = str(row.get("annotation_outcome_class", "")).strip()
+        outcome_dimensions = row.get("outcome_dimensions")
+        if not is_reference and not isinstance(outcome_dimensions, dict):
+            raise ValueError(
+                f"Annotation {rollout_id} requires outcome_dimensions"
+            )
+        if not is_reference and not isinstance(outcome_dimensions.get("parseable"), bool):
+            raise ValueError(
+                f"Annotation {rollout_id} requires boolean parseable outcome"
+            )
+        if is_reference:
+            if excluded or outcome_class:
+                raise ValueError(
+                    f"Reference annotation {rollout_id} cannot carry a behavior outcome"
+                )
+        elif excluded:
+            if outcome_class not in EXCLUDED_OUTCOME_CLASSES:
+                raise ValueError(
+                    f"Excluded annotation {rollout_id} has invalid outcome class"
+                )
+        elif outcome_class not in valid_outcomes:
+            raise ValueError(
+                f"Annotation {rollout_id} requires a valid annotation_outcome_class"
+            )
         for field in ("label_source", "annotation_protocol"):
             if not isinstance(row.get(field), str) or not row[field].strip():
                 raise ValueError(f"Annotation {rollout_id} requires non-empty {field}")
@@ -136,6 +175,8 @@ def main() -> None:
                 "label": int(annotation["label"]),
                 "label_source": annotation["label_source"],
                 "annotation_protocol": annotation["annotation_protocol"],
+                "annotation_outcome_class": annotation.get("annotation_outcome_class"),
+                "outcome_dimensions": annotation.get("outcome_dimensions", {}),
                 "annotation_metadata": annotation.get("metadata", {}),
                 "eligible_for_main_study": True,
             }

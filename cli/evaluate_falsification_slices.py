@@ -132,6 +132,7 @@ def _is_registered_behavior_transfer(
     return (
         str(run.get("source_task", "")) in transfer["source_values"]
         and str(run.get("target_task", "")) == task_name
+        and str(run.get("source_task", "")) != task_name
         and behavior_values.issubset(set(transfer["heldout_values"]))
     )
 

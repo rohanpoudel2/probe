@@ -36,6 +36,17 @@ uv run python -m cli.validate_multimodel_config \
 
 CI uses the committed `uv.lock`. Run the test suite before generating data and again before a frozen execution.
 
+To verify readiness before a compute-heavy run:
+
+```bash
+rtk python -m cli.run_frontier_suite \
+  --config experiments/protocol/main_research_manifest.yaml \
+  --dry-run
+```
+
+The dry run prints the full artifact checklist and the exact commands that would run for
+selection-only or full execution modes.
+
 ## Registered monitored models
 
 | Study name | Hugging Face model | Revision | Family |
@@ -218,7 +229,7 @@ uv run python -m cli.audit_rollout_dataset \
   --output data/audits/Qwen3-4B/sycophancy.json
 ```
 
-Repeat for `sycophancy` and `motivated_reasoning`. The imported `cot_distortion` records already carry their verified objective outcome labels. A task is eligible only when its executable rule yields both observed labels and matched scenario groups.
+Repeat for `sycophancy` and `motivated_reasoning`. The current labeler retains every parseable response, including non-target wrong answers, and records `annotation_outcome_class` plus `outcome_dimensions`; only missing final-answer markers or missing rule metadata are excluded. The imported `cot_distortion` records already carry their verified objective outcome labels. A task is eligible only when its executable rule yields both observed labels and matched scenario groups. Labeled files created before these outcome fields were introduced are intentionally rejected and must be regenerated from their existing rollouts and fresh annotations.
 
 ### 7. Freeze shift slices and exact-prompt hard negatives
 
@@ -242,6 +253,8 @@ uv run python -m cli.extract_task_activations \
   --model_revision 1cfa9a7208912126459214e8b04321603b3df60c \
   --layers 7,15,23,31 \
   --views answer,full_text \
+  --trajectory_prefix_percentiles 10,25,50,75,100 \
+  --trajectory_prefix_stack_views \
   --output_dir outputs/final_features/Qwen3-4B/sycophancy_main \
   --device mps
 
@@ -252,11 +265,13 @@ uv run python -m cli.extract_task_activations \
   --model_revision 1cfa9a7208912126459214e8b04321603b3df60c \
   --layers 7,15,23,31 \
   --views answer,full_text \
+  --trajectory_prefix_percentiles 10,25,50,75,100 \
+  --trajectory_prefix_stack_views \
   --output_dir outputs/final_features/Qwen3-4B/reference_traffic \
   --device mps
 ```
 
-Repeat activation extraction for `motivated_reasoning` and imported `cot_distortion`, then for every monitored model. Layer numbers are zero-based transformer-block outputs. Extraction uses the tokenizer’s chat template and rejects missing views or truncation by default. The registered primary comparison uses only `answer`; `full_text` is stored in the same pass for the declared secondary ablations.
+Repeat activation extraction for `motivated_reasoning` and imported `cot_distortion`, then for every monitored model. Layer numbers are zero-based transformer-block outputs. Extraction uses the tokenizer's chat template and rejects missing views or truncation by default. Trajectory prefixes are cumulative percentages of the assistant response, not percentages of the prompt-plus-response transcript; extraction also stores a prompt-end control. The primary endpoint uses stacked trajectory prefixes, while `answer` remains the common static comparison.
 
 ### 9. Build frozen text-embedding caches
 
@@ -266,6 +281,7 @@ uv run python -m cli.extract_text_embeddings \
   --data data/labeled/Qwen3-4B/sycophancy.jsonl \
   --embedding_config experiments/baselines/text_embedding_models.yaml \
   --embedding_model_key qwen3_embedding_0_6b \
+  --views prompt_text,answer_text,transcript_text,response_prefix_text_p10,response_prefix_text_p25,response_prefix_text_p50,response_prefix_text_p75,response_prefix_text_p100 \
   --output_dir outputs/text_embeddings/Qwen3-4B/sycophancy \
   --device mps
 
@@ -274,6 +290,7 @@ uv run python -m cli.extract_text_embeddings \
   --data data/labeled/Qwen3-4B/reference_traffic.jsonl \
   --embedding_config experiments/baselines/text_embedding_models.yaml \
   --embedding_model_key qwen3_embedding_0_6b \
+  --views prompt_text,answer_text,transcript_text,response_prefix_text_p10,response_prefix_text_p25,response_prefix_text_p50,response_prefix_text_p75,response_prefix_text_p100 \
   --output_dir outputs/text_embeddings/Qwen3-4B/reference_traffic \
   --device mps
 ```
@@ -310,11 +327,11 @@ uv run python -m cli.freeze_protocol_from_selection \
   --output-config experiments/protocol/frozen_research_manifest.yaml \
   --comparisons-output experiments/protocol/preregistered_comparisons.yaml \
   --falsification-comparisons-output experiments/protocol/preregistered_falsification_comparisons.yaml \
-  --selection-k 8 \
+  --selection_k 8 \
   --confirmatory-results-dir results/frontier_main
 ```
 
-The freezer re-derives the registered `selection_k: 8` selector from `task_summary.csv`, rejects failed runs or any finite behavior-test metric, and refuses to replace an existing non-identical protocol artifact. It creates all model × task-pair × label-budget primary comparisons and every required model × falsification-axis and hard-negative comparison.
+The selection run also writes `early_warning_source_selection.csv`. The freezer re-derives the static and early-warning selectors from `task_summary.csv`, rejects failed runs or any finite behavior-test metric, and refuses to replace an existing non-identical protocol artifact. It embeds the exact P8 layer and visible-prefix black-box identity at every registered prefix, then creates all model × task-pair × label-budget static comparisons and every required model × falsification-axis and hard-negative comparison.
 
 Validate, preview, and execute the confirmatory run:
 
@@ -387,6 +404,8 @@ uv run python -m cli.extract_task_activations \
   --model_revision 1cfa9a7208912126459214e8b04321603b3df60c \
   --layers 7,15,23,31 \
   --views answer,full_text \
+  --trajectory_prefix_percentiles 10,25,50,75,100 \
+  --trajectory_prefix_stack_views \
   --output_dir outputs/final_features/Qwen3-4B/honesty_control \
   --device mps
 ```
@@ -408,9 +427,9 @@ uv run python -m cli.run_task_sweep \
   --target_task motivated_reasoning \
   --model Qwen3-4B \
   --results_dir results/debug_selection \
-  --views answer \
+  --views answer,trajectory_prompt_end,trajectory_prefix_p10,trajectory_prefix_p25,trajectory_prefix_p50,trajectory_prefix_p75,trajectory_prefix_p100,trajectory_prefix_stack_p10,trajectory_prefix_stack_p25,trajectory_prefix_stack_p50,trajectory_prefix_stack_p75,trajectory_prefix_stack_p100 \
   --layers all \
-  --probes P1_logistic,P2_mass_mean,P3_lda,P4_cosine,P7_mahalanobis \
+  --probes P1_logistic,P2_mass_mean,P3_lda,P4_cosine,P7_mahalanobis,P8_citm \
   --k_values 1,2,4,8,16,32 \
   --seeds 10 \
   --max_reference_alert_rate 0.01 \
@@ -487,6 +506,12 @@ Every baseline uses the same reference identities, conformal rule, threshold, la
 ## Re-run registered paired inference
 
 ```bash
+uv run python -m cli.compute_early_warning_significance \
+  --results_dir results/frontier_main \
+  --comparisons experiments/protocol/preregistered_comparisons.yaml \
+  --selection-k 8 \
+  --bootstrap_samples 5000
+
 uv run python -m cli.compute_task_significance \
   --results_dir results/frontier_main \
   --comparisons experiments/protocol/preregistered_comparisons.yaml \
@@ -499,7 +524,7 @@ uv run python -m cli.compute_falsification_significance \
   --bootstrap_samples 5000
 ```
 
-System selection uses source evaluation data at a fixed registered label budget. Final-test labels never choose a probe family, layer, or view. Inference pairs identical examples across systems, jointly resamples few-shot seeds and scenario groups, and applies one global Holm correction to the registered falsification family.
+System selection uses source evaluation data at a fixed registered label budget. Final-test labels never choose a probe family, layer, view, or prefix comparator. The primary early-warning inference forms paired curves within seed-by-scenario cells, resamples seeds and groups within every model/target cell, and gives registered cells equal weight. Static inference pairs identical examples across systems, and the falsification analysis applies one global Holm correction to its registered family.
 
 ## Final execution gate
 

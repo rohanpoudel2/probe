@@ -50,6 +50,12 @@ def main() -> None:
     csvs = [
         "claim_main_table.csv",
         "claim_supporting_table.csv",
+        "early_warning_source_selection.csv",
+        "early_warning_report.csv",
+        "early_warning_auew.csv",
+        "early_warning_primary_details.csv",
+        "early_warning_cell_inference.csv",
+        "early_warning_primary_inference.csv",
         "task_primary_source_systems.csv",
         "task_primary_transfer_report.csv",
         "task_cross_model_table.csv",

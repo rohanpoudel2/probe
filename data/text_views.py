@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from math import ceil
 from typing import Iterable
 
 import numpy as np
@@ -9,12 +10,49 @@ from data.schema import TaskExample
 
 
 ALLOWED_TEXT_VIEWS = {"prompt_text", "answer_text", "transcript_text"}
+RESPONSE_PREFIX_TEXT_VIEW_RE = re.compile(r"^response_prefix_text_p(\d+)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{7,64}$")
 
 
+def response_prefix_text_view(percentile: int) -> str:
+    percentile = int(percentile)
+    if not 1 <= percentile <= 100:
+        raise ValueError("response-prefix percentiles must be in [1, 100]")
+    return f"response_prefix_text_p{percentile}"
+
+
+def parse_response_prefix_text_view(view: str) -> int | None:
+    match = RESPONSE_PREFIX_TEXT_VIEW_RE.fullmatch(str(view))
+    if match is None:
+        return None
+    percentile = int(match.group(1))
+    return percentile if 1 <= percentile <= 100 else None
+
+
+def is_valid_text_view(view: str) -> bool:
+    return view in ALLOWED_TEXT_VIEWS or parse_response_prefix_text_view(view) is not None
+
+
+def _visible_answer(example: TaskExample) -> str:
+    if example.messages:
+        return "\n".join(
+            message["content"]
+            for message in example.messages
+            if message.get("role") == "assistant"
+        )
+    return example.assistant_response or example.final_answer or ""
+
+
 def text_view(example: TaskExample, view: str) -> str:
-    if view not in ALLOWED_TEXT_VIEWS:
+    if not is_valid_text_view(view):
         raise ValueError(f"Unknown text view: {view}")
+    prefix_percentile = parse_response_prefix_text_view(view)
+    if prefix_percentile is not None:
+        answer = _visible_answer(example)
+        if not answer:
+            return ""
+        end = max(1, min(len(answer), ceil(len(answer) * prefix_percentile / 100)))
+        return answer[:end]
     if example.messages:
         if view == "prompt_text":
             return "\n".join(
@@ -33,7 +71,7 @@ def text_view(example: TaskExample, view: str) -> str:
         )
 
     prompt = "\n\n".join(part for part in (example.context, example.prompt) if part)
-    answer = example.assistant_response or example.final_answer or ""
+    answer = _visible_answer(example)
     reasoning = example.chain_of_thought or ""
     if view == "prompt_text":
         return prompt

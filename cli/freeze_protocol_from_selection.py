@@ -11,6 +11,10 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from cli.build_early_warning_report import (
+    EARLY_SELECTION_COLUMNS,
+    select_early_warning_systems,
+)
 from cli.common import load_yaml
 from data.falsification import (
     SHIFT_AXES,
@@ -38,6 +42,29 @@ def _configured_pairs(config: dict[str, Any]) -> list[tuple[str, str]]:
     if not pairs:
         raise ValueError("Protocol config contains no task pairs")
     return sorted(pairs)
+
+
+def _parse_registered_percentiles(value: object) -> list[int]:
+    if value is None:
+        return []
+    raw = value if isinstance(value, list) else str(value).split(",")
+    percentiles = sorted(
+        {
+            int(str(item).strip())
+            for item in raw
+            if str(item).strip()
+        }
+    )
+    if any(percentile < 1 or percentile > 100 for percentile in percentiles):
+        raise ValueError("trajectory_prefix_percentiles must be in [1, 100]")
+    return percentiles
+
+
+def _selected_source_tasks(selected: pd.DataFrame) -> set[tuple[str, str]]:
+    return {
+        (str(row.model), str(row.source_task))
+        for row in selected.itertuples(index=False)
+    }
 
 
 def _identity(row: pd.Series, *, include_balance: bool) -> dict[str, Any]:
@@ -179,11 +206,18 @@ def validate_selection_evidence(
         configured_probes.update(
             str(value) for value in config.get("black_box_baselines", [])
         )
+    selected_source_tasks = _selected_source_tasks(selected)
+
     for model in config["models"]:
         model_name = str(model["name"])
-        for source_task in {
-            source for source, _ in _configured_pairs(config)
-        }:
+        model_source_tasks = {
+            source
+            for (configured_model, source) in selected_source_tasks
+            if configured_model == model_name
+        }
+        if not model_source_tasks:
+            continue
+        for source_task in model_source_tasks:
             rows = at_selection_k[
                 (at_selection_k["model"].astype(str) == model_name)
                 & (at_selection_k["source_task"].astype(str) == source_task)
@@ -203,11 +237,36 @@ def validate_selection_evidence(
                 }
                 for probe, probe_rows in white_rows.groupby("probe")
             }
-            if len({frozenset(value) for value in white_identity_sets.values()}) > 1:
+            static_identity_sets = {
+                probe: identities
+                for probe, identities in white_identity_sets.items()
+                if probe != "P8_citm"
+            }
+            if len({frozenset(value) for value in static_identity_sets.values()}) > 1:
                 raise ValueError(
                     f"Selection evidence has incomplete layer/view coverage for "
                     f"{model_name}/{source_task}"
                 )
+            if "P8_citm" in white_identity_sets:
+                if not static_identity_sets:
+                    raise ValueError(
+                        "P8_citm selection requires at least one static white-box baseline"
+                    )
+                static_identities = next(iter(static_identity_sets.values()))
+                static_layers = {layer for layer, _ in static_identities}
+                trajectory_percentiles = _parse_registered_percentiles(
+                    config.get("trajectory_prefix_percentiles")
+                )
+                expected_citm = {
+                    (layer, f"trajectory_prefix_stack_p{percentile}")
+                    for layer in static_layers
+                    for percentile in trajectory_percentiles
+                }
+                if white_identity_sets["P8_citm"] != expected_citm:
+                    raise ValueError(
+                        f"Selection evidence has incomplete P8_citm trajectory coverage "
+                        f"for {model_name}/{source_task}"
+                    )
 
             expected_black_views = {
                 "B1_text_tfidf": set(config.get("text_embedding_views", [])),
@@ -247,9 +306,8 @@ def validate_selection_evidence(
         )
 
     expected_keys = {
-        (str(model["name"]), source_task, access_regime)
-        for model in config["models"]
-        for source_task in {source for source, _ in _configured_pairs(config)}
+        (model_name, source_task, access_regime)
+        for model_name, source_task in selected_source_tasks
         for access_regime in ("white_box", "black_box")
     }
     observed_keys = {
@@ -267,8 +325,10 @@ def validate_selection_evidence(
 def build_primary_comparisons(
     config: dict[str, Any],
     selected: pd.DataFrame,
+    early_selected: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     lookup = _selection_lookup(selected)
+    selected_source_tasks = _selected_source_tasks(selected)
     k_values = sorted(
         {
             int(value.strip())
@@ -280,6 +340,8 @@ def build_primary_comparisons(
     for model in config["models"]:
         model_name = str(model["name"])
         for source_task, target_task in _configured_pairs(config):
+            if (model_name, source_task) not in selected_source_tasks:
+                continue
             white = lookup.get((model_name, source_task, "white_box"))
             black = lookup.get((model_name, source_task, "black_box"))
             if white is None or black is None:
@@ -310,11 +372,16 @@ def build_primary_comparisons(
                         "metric": "tpr",
                     }
                 )
-    return {
+    output = {
         "schema_version": "frontier-primary-comparisons-v1",
         "multiplicity_control": "holm_global",
         "comparisons": comparisons,
     }
+    if early_selected is not None:
+        output["early_warning_selection"] = early_selected[
+            EARLY_SELECTION_COLUMNS
+        ].to_dict(orient="records")
+    return output
 
 
 def build_falsification_comparisons(
@@ -325,11 +392,14 @@ def build_falsification_comparisons(
     selection_k: int,
 ) -> dict[str, Any]:
     lookup = _selection_lookup(selected)
+    selected_source_tasks = _selected_source_tasks(selected)
     comparisons: list[dict[str, Any]] = []
     behavior_transfer = registry["behavior_transfer"]
     for model in config["models"]:
         model_name = str(model["name"])
         for source_task, target_task in _configured_pairs(config):
+            if (model_name, source_task) not in selected_source_tasks:
+                continue
             if target_task not in registry["tasks"]:
                 continue
             white = lookup.get((model_name, source_task, "white_box"))
@@ -351,7 +421,8 @@ def build_falsification_comparisons(
             task_values = registry["tasks"][target_task]["values"]
             slices: list[tuple[str, str]] = []
             if (
-                source_task in behavior_transfer["source_values"]
+                source_task != target_task
+                and source_task in behavior_transfer["source_values"]
                 and target_task in behavior_transfer["heldout_values"]
             ):
                 slices.append(("behavior", target_task))
@@ -482,9 +553,50 @@ def main() -> None:
         selected,
         selection_k=registered_selection_k,
     )
+    early_selection_path = (
+        Path(args.selection_results_dir)
+        / "early_warning_source_selection.csv"
+    )
+    if not early_selection_path.exists():
+        raise FileNotFoundError(
+            f"Missing {early_selection_path}; complete the registered "
+            "early-warning source selection first"
+        )
+    early_selected = pd.read_csv(early_selection_path)
+    missing_early_columns = set(EARLY_SELECTION_COLUMNS).difference(
+        early_selected.columns
+    )
+    if missing_early_columns:
+        raise ValueError(
+            "Early-warning source selection lacks columns "
+            f"{sorted(missing_early_columns)}"
+        )
+    selection_summary = pd.read_csv(
+        Path(args.selection_results_dir) / "task_summary.csv"
+    )
+    expected_early_selected = select_early_warning_systems(
+        selection_summary,
+        selection_k=registered_selection_k,
+        expected_prefixes=set(
+            _parse_registered_percentiles(
+                base.get("trajectory_prefix_percentiles")
+            )
+        ),
+    )
+    observed_early_selected = early_selected[
+        EARLY_SELECTION_COLUMNS
+    ].sort_values(
+        ["model", "source_task", "prefix_alert_pct"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    if not observed_early_selected.equals(expected_early_selected):
+        raise ValueError(
+            "early_warning_source_selection.csv does not match a fresh "
+            "deterministic source-only selection"
+        )
     registry_path = Path(base["falsification_registry"])
     registry, registry_sha256 = load_falsification_registry(registry_path)
-    primary = build_primary_comparisons(base, selected)
+    primary = build_primary_comparisons(base, selected, observed_early_selected)
     falsification = build_falsification_comparisons(
         base,
         selected,
@@ -497,6 +609,10 @@ def main() -> None:
     selection_provenance = {
         "selection_file": str(selection_path),
         "selection_file_sha256": _sha256(selection_path),
+        "early_warning_selection_file": str(early_selection_path),
+        "early_warning_selection_file_sha256": _sha256(
+            early_selection_path
+        ),
         "base_config_sha256": _sha256(base_path),
         "selection_k": registered_selection_k,
         "registry_sha256": registry_sha256,

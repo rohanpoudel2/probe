@@ -12,6 +12,7 @@ from evaluation.task_aggregation import (
 )
 from evaluation.task_model_selection import rank_models
 from evaluation.task_statistics import add_seed_summary_columns
+from data.outcomes import MODEL_OUTCOME_CLASSES
 
 
 GROUP_COLS = [
@@ -51,6 +52,25 @@ METRIC_COLS = [
     "reference_holdout_alert_rate",
     "wall_clock_s",
 ]
+
+_OUTCOME_CLASSES = MODEL_OUTCOME_CLASSES
+_OUTCOME_METRIC_BASES = (
+    "tpr_at_reference_alert_budget",
+    "tpr_at_1pct_reference_alert_budget",
+    "fpr_at_frozen_threshold",
+    "oracle_tpr_at_requested_fpr",
+    "auroc",
+    "auprc",
+    "brier",
+    "ece",
+    "n_examples",
+    "n_positive",
+    "n_negative",
+)
+for _prefix in ("eval", "test", "transfer"):
+    for _outcome in _OUTCOME_CLASSES:
+        for _base in _OUTCOME_METRIC_BASES:
+            METRIC_COLS.append(f"{_prefix}_{_outcome}_{_base}")
 
 
 def main() -> None:

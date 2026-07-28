@@ -32,11 +32,19 @@ data/annotations/
 data/labeled/
 data/audits/
 data/screening/
+data/falsification/
+data/manifests/
 *.npy
 tmp/
 *.generated.yaml
+experiments/protocol/frozen_research_manifest.yaml
+experiments/protocol/preregistered_comparisons.yaml
+experiments/protocol/preregistered_falsification_comparisons.yaml
 .vscode/
 wandb/
+
+# Temporary local pytest artifacts
+.tmp_pytest/
 
 # Environment
 .env

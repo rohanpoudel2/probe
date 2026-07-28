@@ -82,6 +82,22 @@ def test_claim_tables_report_empirical_gate_status(
             },
         ]
     ).to_csv(results_dir / "falsification_significance.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "endpoint": "mean_unseen_behavior_auew_uplift",
+                "mean_diff": 0.1,
+                "ci_low": 0.01,
+                "ci_high": 0.2,
+                "p_value": 0.02,
+                "n_cells": 1,
+                "status": "confirmatory_hierarchical_inference_complete",
+            }
+        ]
+    ).to_csv(
+        results_dir / "early_warning_primary_inference.csv",
+        index=False,
+    )
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -110,8 +126,11 @@ def test_claim_tables_report_empirical_gate_status(
     build_final_claim_tables.main()
     main_table = pd.read_csv(results_dir / "claim_main_table.csv")
     gates = pd.read_csv(results_dir / "claim_gate_status.csv")
-    assert main_table.loc[0, "reference_alert_budget_status"] == expected_status
-    assert bool(main_table.loc[0, "reference_alert_budget_supported"]) is supported
+    assert (
+        main_table.loc[0, "endpoint"]
+        == "mean_unseen_behavior_auew_uplift"
+    )
+    assert bool(main_table.loc[0, "claim_supported"])
     reference_gate = gates[
         gates["gate_name"] == "selected_system_reference_alert_budget"
     ].iloc[0]

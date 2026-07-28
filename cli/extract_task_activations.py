@@ -17,6 +17,16 @@ def _parse_layers(raw_layers) -> List[int]:
     return [int(x.strip()) for x in str(raw_layers).split(",") if x.strip()]
 
 
+def _parse_percentiles(raw_percentiles) -> List[int] | None:
+    if raw_percentiles is None:
+        return None
+    if isinstance(raw_percentiles, list):
+        values = [int(x) for x in raw_percentiles]
+    else:
+        values = [int(x.strip()) for x in str(raw_percentiles).split(",") if x.strip()]
+    return values or None
+
+
 def _git_state() -> tuple[str, bool]:
     try:
         revision = subprocess.run(
@@ -78,6 +88,22 @@ def main() -> None:
         action="store_true",
         help="Permit authored fixtures in an explicitly non-confirmatory debug run.",
     )
+    parser.add_argument(
+        "--trajectory_prefix_percentiles",
+        default=None,
+        help=(
+            "Optional comma-separated percentiles (1-100) for trajectory-prefix "
+            "views, e.g. '10,25,50,75,100'"
+        ),
+    )
+    parser.add_argument(
+        "--trajectory_prefix_stack_views",
+        action="store_true",
+        help=(
+            "Emit trajectory_prefix_stack_p* views that concatenate cumulative prefix "
+            "activations for sequence probes."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--allow_dirty_code",
@@ -115,6 +141,10 @@ def main() -> None:
             allow_truncation=args.allow_truncation,
             pooling_mode=args.pooling_mode,
             views=[v.strip() for v in args.views.split(",") if v.strip()],
+            trajectory_prefix_percentiles=_parse_percentiles(
+                args.trajectory_prefix_percentiles
+            ),
+            trajectory_prefix_stack_view=args.trajectory_prefix_stack_views,
             device=args.device,
             output_dir=args.output_dir,
             use_chat_template=not args.no_chat_template,

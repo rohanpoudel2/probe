@@ -4,6 +4,7 @@ from probes import (
     CosineProbe,
     LDAProbe,
     LogisticProbe,
+    CITMProbe,
     MahalanobisProbe,
     MassMeanProbe,
 )
@@ -14,4 +15,5 @@ TASK_PROBE_REGISTRY = {
     "P3_lda": LDAProbe,
     "P4_cosine": CosineProbe,
     "P7_mahalanobis": MahalanobisProbe,
+    "P8_citm": CITMProbe,
 }

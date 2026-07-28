@@ -18,8 +18,8 @@ from cli.run_task_sweep import (
 )
 from data.group_splitting import declared_protocol_split
 from data.text_views import (
-    ALLOWED_TEXT_VIEWS,
     examples_to_text_arrays,
+    is_valid_text_view,
     monitored_model_identity,
 )
 from evaluation.metrics import (
@@ -137,8 +137,9 @@ def main() -> None:
     if args.reference_task != "reference_traffic":
         raise ValueError("Operational calibration requires reference_traffic")
     views = [value.strip() for value in args.views.split(",") if value.strip()]
-    if not set(views).issubset(ALLOWED_TEXT_VIEWS):
-        raise ValueError(f"Text views must be chosen from {sorted(ALLOWED_TEXT_VIEWS)}")
+    invalid_views = sorted(view for view in views if not is_valid_text_view(view))
+    if invalid_views:
+        raise ValueError(f"Unknown text views: {invalid_views}")
     k_values = [int(value.strip()) for value in args.k_values.split(",") if value.strip()]
     target_task = args.target_task or args.source_task
 

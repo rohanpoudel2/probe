@@ -28,8 +28,8 @@ from data.llm_judge import (
 from data.llm_judge_cache import atomic_save_judge_cache, load_judge_cache
 from data.rollout_schema import canonical_json
 from data.text_views import (
-    ALLOWED_TEXT_VIEWS,
     examples_to_text_arrays,
+    is_valid_text_view,
     monitored_model_identity,
 )
 from evaluation.metrics import (
@@ -432,10 +432,9 @@ def main() -> None:
     if args.reference_task != "reference_traffic":
         raise ValueError("Operational calibration requires reference_traffic")
     views = [value.strip() for value in args.views.split(",") if value.strip()]
-    if not views or not set(views).issubset(ALLOWED_TEXT_VIEWS):
-        raise ValueError(
-            f"Judge views must be chosen from {sorted(ALLOWED_TEXT_VIEWS)}"
-        )
+    invalid_views = sorted(view for view in views if not is_valid_text_view(view))
+    if not views or invalid_views:
+        raise ValueError(f"Unknown judge views: {invalid_views}")
     modes = [value.strip() for value in args.modes.split(",") if value.strip()]
     if not modes or not set(modes).issubset({"zero_shot", "few_shot"}):
         raise ValueError("Judge modes must be zero_shot and/or few_shot")
@@ -509,7 +508,9 @@ def main() -> None:
 
             contexts: list[tuple[str, int, int | None, FewShotSelection | None]] = []
             if "zero_shot" in modes:
-                contexts.append(("zero_shot", 0, None, None))
+                contexts.extend(
+                    ("zero_shot", k, None, None) for k in k_values
+                )
             if "few_shot" in modes:
                 for k in k_values:
                     for seed in range(args.seeds):
@@ -542,7 +543,10 @@ def main() -> None:
                     "judge_implementation_sha256": implementation_sha256,
                     "view": view,
                     "mode": mode,
-                    "k": k,
+                    # Zero-shot scoring is identical at every matched label
+                    # budget. Keep one cache identity while emitting one
+                    # paired run per registered k below.
+                    "k": 0 if mode == "zero_shot" else k,
                     "context_seed": context_seed,
                     "source_task": args.source_task,
                     "target_task": target_task,

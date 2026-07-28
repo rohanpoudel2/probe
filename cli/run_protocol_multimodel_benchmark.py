@@ -9,7 +9,42 @@ import sys
 from pathlib import Path
 
 from cli.common import load_yaml, run_cmd
+from data.trajectory_schema import TRAJECTORY_PROMPT_END_VIEW
 from tasks import TASK_REGISTRY
+
+
+def _parse_view_csv(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise ValueError("views must be a comma-separated string or list")
+
+
+def _parse_percentiles(value: object) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw = value
+    else:
+        raw = str(value).split(",")
+    percentiles: list[int] = []
+    for item in raw:
+        raw_item = str(item).strip()
+        if not raw_item:
+            continue
+        try:
+            percentile = int(raw_item)
+        except ValueError as err:
+            raise ValueError(
+                "trajectory_prefix_percentiles must be comma-separated integers"
+            ) from err
+        if not 1 <= percentile <= 100:
+            raise ValueError(
+                "trajectory_prefix_percentiles must be integers in [1, 100]"
+            )
+        percentiles.append(percentile)
+    return sorted(set(percentiles))
 
 
 def _iter_pairs(cfg: dict) -> list[dict]:
@@ -106,6 +141,22 @@ def main() -> None:
     overwritten_baselines: set[tuple[str, str, str]] = set()
     run_black_box = bool(cfg.get("run_black_box_baselines", False))
     registered_baselines = set(cfg.get("black_box_baselines", []))
+    requested_views = _parse_view_csv(cfg.get("views", "answer"))
+    trajectory_percentiles = _parse_percentiles(cfg.get("trajectory_prefix_percentiles"))
+    trajectory_prefix_stack_views = bool(cfg.get("trajectory_prefix_stack_views", False))
+    trajectory_views = [
+        f"trajectory_prefix_p{int(percentile)}"
+        for percentile in trajectory_percentiles
+    ]
+    if trajectory_percentiles:
+        trajectory_views.insert(0, TRAJECTORY_PROMPT_END_VIEW)
+    if trajectory_prefix_stack_views:
+        trajectory_views.extend(
+            f"trajectory_prefix_stack_p{int(percentile)}" for percentile in trajectory_percentiles
+        )
+    requested_views = list(dict.fromkeys(requested_views + trajectory_views))
+    requested_views_csv = ",".join(requested_views)
+
     for model_cfg in cfg["models"]:
         model_name = model_cfg["name"]
         feature_dirs = model_cfg["feature_dirs"]
@@ -132,7 +183,7 @@ def main() -> None:
                 "--results_dir",
                 str(results_dir),
                 "--views",
-                cfg.get("views", "full_text,answer"),
+                requested_views_csv,
                 "--layers",
                 str(cfg.get("layers", "all")),
                 "--probes",
@@ -387,6 +438,17 @@ def main() -> None:
             [
                 sys.executable,
                 "-m",
+                "cli.build_early_warning_report",
+                "--results_dir",
+                str(results_dir),
+                "--selection_k",
+                str(cfg.get("selection_k", 8)),
+            ]
+        )
+        run_cmd(
+            [
+                sys.executable,
+                "-m",
                 "cli.build_frozen_transfer_report",
                 "--results_dir",
                 str(results_dir),
@@ -462,7 +524,36 @@ def main() -> None:
             str(results_dir),
         ]
     )
+    early_warning_cmd = [
+        sys.executable,
+        "-m",
+        "cli.build_early_warning_report",
+        "--results_dir",
+        str(results_dir),
+        "--selection_k",
+        str(cfg.get("selection_k", 8)),
+    ]
     if cfg.get("comparisons_file"):
+        early_warning_cmd.extend(
+            ["--frozen_comparisons", str(cfg["comparisons_file"])]
+        )
+    run_cmd(early_warning_cmd)
+    if cfg.get("comparisons_file"):
+        run_cmd(
+            [
+                sys.executable,
+                "-m",
+                "cli.compute_early_warning_significance",
+                "--results_dir",
+                str(results_dir),
+                "--comparisons",
+                str(cfg["comparisons_file"]),
+                "--selection_k",
+                str(cfg.get("selection_k", 8)),
+                "--bootstrap_samples",
+                str(cfg.get("bootstrap_samples", 5000)),
+            ]
+        )
         run_cmd(
             [
                 sys.executable,

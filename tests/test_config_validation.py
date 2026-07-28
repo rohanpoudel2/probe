@@ -30,7 +30,13 @@ def _config():
         "run_falsification_suite": False,
         "falsification_registry": "experiments/protocol/falsification_registry.yaml",
         "claim_gates": {
-            "primary_effect": "white_box_minus_selected_black_box_tpr",
+            "primary_effect": "mean_unseen_behavior_auew_uplift",
+            "primary_probe": "P8_citm",
+            "primary_k": 8,
+            "early_warning_basis": "assistant_response_tokens_v1",
+            "matched_visible_prefix_basis": "assistant_response_characters_v1",
+            "primary_inference": "paired_hierarchical_auew_bootstrap_v1",
+            "auew_weighting": "early_linear_v1",
             "reference_holdout_check": "selected_system_interval_not_above_budget_v1",
             "hard_negative_check": "fpr_noninferiority_and_pairwise_ordering_v1",
             "hard_negative_fpr_noninferiority_margin": 0.01,
@@ -129,6 +135,10 @@ def test_frozen_artifact_provenance_rejects_comparison_tampering(
     provenance = {
         "selection_file": "results/selection/task_primary_source_systems.csv",
         "selection_file_sha256": "b" * 64,
+        "early_warning_selection_file": (
+            "results/selection/early_warning_source_selection.csv"
+        ),
+        "early_warning_selection_file_sha256": "d" * 64,
         "base_config_sha256": "c" * 64,
         "selection_k": 8,
         "registry_sha256": registry_sha256,
@@ -240,6 +250,9 @@ def _write_feature_bundle(
         "labels": np.asarray([0, 1], dtype=np.int64),
         "example_ids": np.asarray(["e0", "e1"]),
         "question_ids": np.asarray(question_ids),
+        "annotation_outcome_class": np.asarray(
+            ["correct_non_target", "target_aligned"]
+        ),
         "model_name": np.asarray("org/model"),
         "model_revision": np.asarray("a" * 40),
         "tokenizer_revision": np.asarray("a" * 40),

@@ -4,6 +4,7 @@ from .mass_mean import MassMeanProbe
 from .lda import LDAProbe
 from .cosine import CosineProbe
 from .mahalanobis import MahalanobisProbe
+from .trajectory import CITMProbe
 
 __all__ = [
     "CosineProbe",
@@ -11,6 +12,7 @@ __all__ = [
     "LogisticProbe",
     "MahalanobisProbe",
     "MassMeanProbe",
+    "CITMProbe",
     "Probe",
     "PROBE_REGISTRY",
 ]
@@ -21,4 +23,5 @@ PROBE_REGISTRY = {
     "P3_lda": LDAProbe,
     "P4_cosine": CosineProbe,
     "P7_mahalanobis": MahalanobisProbe,
+    "P8_citm": CITMProbe,
 }

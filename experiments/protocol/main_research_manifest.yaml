@@ -6,7 +6,9 @@ overwrite: false
 bootstrap_samples: 1000
 views: answer
 layers: all
-probes: P1_logistic,P2_mass_mean,P3_lda,P4_cosine,P7_mahalanobis
+trajectory_prefix_percentiles: 10,25,50,75,100
+trajectory_prefix_stack_views: true
+probes: P1_logistic,P2_mass_mean,P3_lda,P4_cosine,P7_mahalanobis,P8_citm
 k_values: 1,2,4,8,16,32
 selection_k: 8
 seeds: 10
@@ -28,6 +30,11 @@ text_embedding_views:
   - prompt_text
   - answer_text
   - transcript_text
+  - response_prefix_text_p10
+  - response_prefix_text_p25
+  - response_prefix_text_p50
+  - response_prefix_text_p75
+  - response_prefix_text_p100
 llm_judge_model_lock: experiments/baselines/llm_judge_models.yaml
 llm_judge_model_key: phi4_14b
 llm_judge_batch_size: 8
@@ -35,6 +42,11 @@ llm_judge_views:
   - prompt_text
   - answer_text
   - transcript_text
+  - response_prefix_text_p10
+  - response_prefix_text_p25
+  - response_prefix_text_p50
+  - response_prefix_text_p75
+  - response_prefix_text_p100
 llm_judge_modes:
   - zero_shot
   - few_shot
@@ -49,7 +61,13 @@ reference_traffic_protocol:
   max_reference_alert_rate: 0.01
   semantic_labels: false
 claim_gates:
-  primary_effect: white_box_minus_selected_black_box_tpr
+  primary_effect: mean_unseen_behavior_auew_uplift
+  primary_probe: P8_citm
+  primary_k: 8
+  early_warning_basis: assistant_response_tokens_v1
+  matched_visible_prefix_basis: assistant_response_characters_v1
+  primary_inference: paired_hierarchical_auew_bootstrap_v1
+  auew_weighting: early_linear_v1
   reference_holdout_check: selected_system_interval_not_above_budget_v1
   hard_negative_check: fpr_noninferiority_and_pairwise_ordering_v1
   hard_negative_fpr_noninferiority_margin: 0.01
@@ -59,11 +77,17 @@ claim_gates:
 calibration_pairs:
   - source_task: sycophancy
     target_task: sycophancy
+  - source_task: motivated_reasoning
+    target_task: motivated_reasoning
 
 transfer_pairs:
   - source_task: sycophancy
     target_task: motivated_reasoning
   - source_task: sycophancy
+    target_task: cot_distortion
+  - source_task: motivated_reasoning
+    target_task: sycophancy
+  - source_task: motivated_reasoning
     target_task: cot_distortion
 
 models:

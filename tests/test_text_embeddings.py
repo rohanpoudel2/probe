@@ -4,10 +4,16 @@ import torch
 
 from cli.extract_text_embeddings import pool_hidden_states, render_embedding_input
 from cli.run_embedding_baselines import _assert_compatible
+from data.schema import TaskExample
 from data.text_embedding_cache import (
     TEXT_EMBEDDING_SCHEMA_VERSION,
     atomic_save_text_embedding_cache,
     load_text_embedding_cache,
+)
+from data.text_views import (
+    is_valid_text_view,
+    response_prefix_text_view,
+    text_view,
 )
 
 
@@ -119,3 +125,16 @@ def test_prompt_cache_rejects_duplicate_normalized_prompts_across_groups(tmp_pat
     )
     with pytest.raises(ValueError, match="repeats normalized prompts"):
         load_text_embedding_cache(path)
+
+
+def test_response_prefix_text_views_are_deterministic_and_nonempty() -> None:
+    example = TaskExample(
+        example_id="e",
+        task_family="test",
+        prompt="prompt",
+        label=0,
+        assistant_response="abcdefghij",
+    )
+    view = response_prefix_text_view(25)
+    assert is_valid_text_view(view)
+    assert text_view(example, view) == "abc"

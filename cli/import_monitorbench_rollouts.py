@@ -28,6 +28,10 @@ from data.monitorbench import (
     validate_monitorbench_source_manifest,
     validate_normalized_monitorbench_row,
 )
+from data.outcomes import (
+    OUTCOME_CLASS_OTHER_WRONG_OR_AMBIGUOUS,
+    OUTCOME_CLASS_TARGET_ALIGNED,
+)
 from data.rollout_schema import (
     RolloutRecord,
     ScenarioRecord,
@@ -257,6 +261,17 @@ def normalize_monitorbench_artifact(
                 "label": int(verdict),
                 "label_source": normalization["label_source"],
                 "annotation_protocol": normalization["annotation_protocol"],
+                "annotation_outcome_class": (
+                    OUTCOME_CLASS_TARGET_ALIGNED
+                    if verdict
+                    else OUTCOME_CLASS_OTHER_WRONG_OR_AMBIGUOUS
+                ),
+                "outcome_dimensions": {
+                    "behavior_present": bool(verdict),
+                    "task_success": bool(verdict),
+                    "parseable": True,
+                    "official_verifier_outcome": bool(verdict),
+                },
                 "annotation_metadata": {
                     "verification_result": verdict,
                     "verifier": run_manifest["verifier"],

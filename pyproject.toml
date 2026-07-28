@@ -38,6 +38,8 @@ packages = [
   "evaluation",
   "extraction",
   "features",
+  "attacks",
+  "causal",
   "probes",
   "tasks",
   "task_benchmark",

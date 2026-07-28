@@ -34,8 +34,6 @@ def load_feature_bundle(features_dir: str, split: str, layer: int) -> Dict[str, 
     if len(bundle["example_ids"]) != n_examples or len(bundle["question_ids"]) != n_examples:
         raise ValueError(f"Feature bundle {path} has misaligned labels and identifiers")
     for key, value in bundle.items():
-        if key in required or value.ndim == 0:
-            continue
         if value.ndim >= 1 and len(value) != n_examples:
             raise ValueError(
                 f"Feature bundle {path} has {n_examples} labels but array {key!r} has length {len(value)}"

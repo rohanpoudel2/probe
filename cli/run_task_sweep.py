@@ -10,6 +10,11 @@ from typing import Dict, Optional
 
 import numpy as np
 
+from data.trajectory_schema import (
+    TRAJECTORY_BASIS,
+    parse_trajectory_prefix_stack_view,
+    parse_trajectory_prefix_view,
+)
 from data.task_feature_loading import infer_layers, load_feature_bundle
 from evaluation.metrics import (
     alert_rate_summary,
@@ -27,6 +32,70 @@ from evaluation.metrics import (
 )
 from task_benchmark import TASK_PROBE_REGISTRY
 from task_benchmark.sampling import FewShotSelection, sample_few_shot_train
+from data.outcomes import MODEL_OUTCOME_CLASSES
+
+TARGET_OUTCOME_CLASSES = MODEL_OUTCOME_CLASSES
+_TRAJECTORY_SEQUENCE_PROBE = "P8_citm"
+
+
+def _parse_trajectory_prefix_percentiles(bundle: Dict[str, np.ndarray]) -> list[int]:
+    raw = bundle.get("trajectory_prefix_percentiles")
+    if raw is None:
+        return []
+    if isinstance(raw, np.ndarray):
+        if raw.size != 1:
+            raise ValueError("trajectory_prefix_percentiles should be a scalar JSON string")
+        raw = raw.item()
+    if raw is None:
+        return []
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        parsed = json.loads(text)
+    elif isinstance(raw, (list, tuple)):
+        parsed = list(raw)
+    else:
+        raise ValueError("trajectory_prefix_percentiles has an unexpected type")
+    return sorted(set(int(percentile) for percentile in parsed))
+
+
+def _fallback_trajectory_percentiles(bundle: Dict[str, np.ndarray]) -> list[int]:
+    return sorted(
+        {
+            value
+            for name in bundle
+            if (value := parse_trajectory_prefix_view(name)) is not None
+        }
+    )
+
+
+def _trajectory_steps_from_view(view: str, bundle: Dict[str, np.ndarray]) -> int | None:
+    target_percentile = parse_trajectory_prefix_stack_view(view)
+    if target_percentile is None:
+        return None
+    percentiles = _parse_trajectory_prefix_percentiles(bundle)
+    if not percentiles:
+        percentiles = _fallback_trajectory_percentiles(bundle)
+    if target_percentile not in percentiles:
+        return None
+    return len([value for value in percentiles if value <= target_percentile])
+
+
+def _validate_trajectory_bundle(bundle: Dict[str, np.ndarray]) -> None:
+    raw = bundle.get("trajectory_basis")
+    if raw is None:
+        raise ValueError("Trajectory feature bundle lacks trajectory_basis")
+    if isinstance(raw, np.ndarray):
+        if raw.size != 1:
+            raise ValueError("trajectory_basis must be scalar")
+        raw = raw.item()
+    if str(raw) != TRAJECTORY_BASIS:
+        raise ValueError(
+            f"Trajectory features require basis {TRAJECTORY_BASIS}, got {raw!r}"
+        )
 
 
 def _load_existing_run_ids(path: Path) -> set[str]:
@@ -64,11 +133,71 @@ def _score_split(probe, bundle: Dict[str, np.ndarray], view: str) -> dict[str, n
     scores = np.asarray(probe.score(X), dtype=float)
     if scores.shape != y.shape or not np.all(np.isfinite(scores)):
         raise ValueError(f"Probe returned invalid scores with shape {scores.shape}")
+    outcomes = (
+        np.asarray(bundle["annotation_outcome_class"]).astype(str)
+        if "annotation_outcome_class" in bundle
+        else None
+    )
+    if outcomes is not None and len(outcomes) != len(y):
+        raise ValueError(
+            "Feature bundle has annotation_outcome_class values that do not match labels"
+        )
     return {
         "labels": y,
         "scores": scores,
         "example_ids": example_ids,
         "question_ids": question_ids,
+        "annotation_outcome_class": outcomes,
+    }
+
+
+def _outcome_metric_payload(
+    *,
+    prefix: str,
+    outcome: str,
+    y: np.ndarray,
+    scores: np.ndarray,
+    threshold: float,
+    max_alert_rate: float,
+    probability_scores: bool,
+) -> dict[str, float]:
+    if len(y) == 0:
+        return {
+            f"{prefix}_{outcome}_n_examples": 0,
+            f"{prefix}_{outcome}_n_positive": 0,
+            f"{prefix}_{outcome}_n_negative": 0,
+            f"{prefix}_{outcome}_auroc": float("nan"),
+            f"{prefix}_{outcome}_auprc": float("nan"),
+            f"{prefix}_{outcome}_tpr_at_reference_alert_budget": float("nan"),
+            f"{prefix}_{outcome}_tpr_at_1pct_reference_alert_budget": float("nan"),
+            f"{prefix}_{outcome}_fpr_at_frozen_threshold": float("nan"),
+            f"{prefix}_{outcome}_oracle_tpr_at_requested_fpr": float("nan"),
+            f"{prefix}_{outcome}_brier": float("nan"),
+            f"{prefix}_{outcome}_ece": float("nan"),
+        }
+    frozen_recall = compute_recall_at_threshold(y, scores, threshold)
+    return {
+        f"{prefix}_{outcome}_n_examples": int(len(y)),
+        f"{prefix}_{outcome}_n_positive": int(np.sum(y == 1)),
+        f"{prefix}_{outcome}_n_negative": int(np.sum(y == 0)),
+        f"{prefix}_{outcome}_auroc": compute_auroc(y, scores),
+        f"{prefix}_{outcome}_auprc": compute_auprc(y, scores),
+        f"{prefix}_{outcome}_tpr_at_reference_alert_budget": frozen_recall,
+        f"{prefix}_{outcome}_tpr_at_1pct_reference_alert_budget": (
+            frozen_recall if np.isclose(max_alert_rate, 0.01) else float("nan")
+        ),
+        f"{prefix}_{outcome}_fpr_at_frozen_threshold": compute_fpr_at_threshold(
+            y, scores, threshold
+        ),
+        f"{prefix}_{outcome}_oracle_tpr_at_requested_fpr": compute_recall_at_fpr(
+            y, scores, max_alert_rate
+        ),
+        f"{prefix}_{outcome}_brier": (
+            compute_brier_score(y, scores) if probability_scores else float("nan")
+        ),
+        f"{prefix}_{outcome}_ece": (
+            compute_ece(y, scores) if probability_scores else float("nan")
+        ),
     }
 
 
@@ -82,6 +211,7 @@ def _metric_payload(
 ) -> dict[str, float]:
     y = scored["labels"]
     scores = scored["scores"]
+    outcomes = scored.get("annotation_outcome_class")
     frozen_recall = compute_recall_at_threshold(y, scores, threshold)
     payload = {
         f"{prefix}_auroc": compute_auroc(y, scores),
@@ -101,6 +231,25 @@ def _metric_payload(
     else:
         payload[f"{prefix}_brier"] = float("nan")
         payload[f"{prefix}_ece"] = float("nan")
+    if outcomes is not None:
+        outcomes = np.asarray(outcomes).astype(str)
+        if len(outcomes) != len(y):
+            raise ValueError(
+                "annotation_outcome_class must have one value per example"
+            )
+        for outcome in TARGET_OUTCOME_CLASSES:
+            mask = outcomes == outcome
+            payload.update(
+                _outcome_metric_payload(
+                    prefix=prefix,
+                    outcome=outcome,
+                    y=y[mask],
+                    scores=scores[mask],
+                    threshold=threshold,
+                    max_alert_rate=max_alert_rate,
+                    probability_scores=probability_scores,
+                )
+            )
     return payload
 
 
@@ -110,6 +259,10 @@ def _prediction_records(
     scored: dict[str, np.ndarray],
     threshold: float,
 ) -> list[dict]:
+    outcomes = scored.get("annotation_outcome_class")
+    if outcomes is None:
+        outcomes = np.full(len(scored["labels"]), None, dtype=object)
+    outcomes = np.asarray(outcomes)
     return [
         {
             "run_id": run_id,
@@ -120,12 +273,16 @@ def _prediction_records(
             "score": float(score),
             "threshold": float(threshold),
             "predicted_positive": bool(score >= threshold),
+            "annotation_outcome_class": None
+            if outcome is None or (isinstance(outcome, float) and np.isnan(outcome))
+            else str(outcome),
         }
-        for example_id, question_id, label, score in zip(
+        for example_id, question_id, label, score, outcome in zip(
             scored["example_ids"],
             scored["question_ids"],
             scored["labels"],
             scored["scores"],
+            outcomes,
         )
     ]
 
@@ -440,9 +597,29 @@ def main() -> None:
                     raise ValueError(
                         f"Layer {layer} probe {probe_name} is missing requested views {missing_views}"
                     )
+                if any(view.startswith("trajectory_") for view in views):
+                    for bundle in (
+                        source_train,
+                        reference_calibration,
+                        reference_holdout,
+                        source_eval,
+                        *(() if source_test is None else (source_test,)),
+                        *(() if target_test is None else (target_test,)),
+                    ):
+                        _validate_trajectory_bundle(bundle)
 
-                probe_kwargs = None
                 for view in views:
+                    probe_kwargs = None
+                    if probe_name == _TRAJECTORY_SEQUENCE_PROBE:
+                        if parse_trajectory_prefix_stack_view(view) is None:
+                            skipped_unsupported += args.seeds
+                            continue
+                        trajectory_steps = _trajectory_steps_from_view(view, source_train)
+                        if trajectory_steps is None:
+                            skipped_unsupported += args.seeds
+                            continue
+                        probe_kwargs = {"trajectory_steps": trajectory_steps}
+
                     for k in k_values:
                         for balance_mode in balance_modes:
                             minimum_counts = getattr(
@@ -535,6 +712,7 @@ def main() -> None:
                                 if summary_rows_written % summary_fsync_every == 0:
                                     os.fsync(summary_handle.fileno())
                                 existing_run_ids.add(run_id)
+
         # Durably persist the full summary once every run has been recorded.
         summary_handle.flush()
         os.fsync(summary_handle.fileno())

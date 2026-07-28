@@ -39,6 +39,8 @@ def rollout_metadata(row: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
         "tokenizer_revision": row.get("tokenizer_revision"),
         "label_source": row.get("label_source"),
         "annotation_protocol": row.get("annotation_protocol"),
+        "annotation_outcome_class": row.get("annotation_outcome_class"),
+        "outcome_dimensions": row.get("outcome_dimensions", {}),
         "annotation_metadata": row.get("annotation_metadata", {}),
         "generation": row.get("generation"),
         "eligible_for_main_study": row.get("eligible_for_main_study"),

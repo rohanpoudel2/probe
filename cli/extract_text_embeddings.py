@@ -17,8 +17,8 @@ from data.text_embedding_cache import (
     atomic_save_text_embedding_cache,
 )
 from data.text_views import (
-    ALLOWED_TEXT_VIEWS,
     examples_to_text_arrays,
+    is_valid_text_view,
     monitored_model_identity,
 )
 from tasks import TASK_REGISTRY
@@ -206,8 +206,9 @@ def main() -> None:
     args = parser.parse_args()
 
     views = [value.strip() for value in args.views.split(",") if value.strip()]
-    if not views or not set(views).issubset(ALLOWED_TEXT_VIEWS):
-        raise ValueError(f"Text views must be chosen from {sorted(ALLOWED_TEXT_VIEWS)}")
+    invalid_views = sorted(view for view in views if not is_valid_text_view(view))
+    if not views or invalid_views:
+        raise ValueError(f"Unknown text views: {invalid_views}")
     data_path = Path(args.data)
     config_path = Path(args.embedding_config)
     spec, config_hash, spec_hash = _load_embedding_spec(

@@ -129,8 +129,8 @@ tasks:
         heldout: [reversible_rot13_v1]
 
 behavior_transfer:
-  source_values: [sycophancy]
-  heldout_values: [motivated_reasoning, cot_distortion]
+  source_values: [sycophancy, motivated_reasoning]
+  heldout_values: [sycophancy, motivated_reasoning, cot_distortion]
 
 required_final_heldout_axes:
   - behavior

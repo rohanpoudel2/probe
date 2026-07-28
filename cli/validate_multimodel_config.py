@@ -20,8 +20,18 @@ from data.falsification import (
     validate_falsification_metadata,
 )
 from data.generation_confidence import confidence_feature_vector
+from data.outcomes import is_valid_model_outcome
 from data.text_embedding_cache import load_text_embedding_cache
-from data.text_views import ALLOWED_TEXT_VIEWS, monitored_model_identity
+from data.text_views import (
+    ALLOWED_TEXT_VIEWS,
+    is_valid_text_view,
+    monitored_model_identity,
+    response_prefix_text_view,
+)
+from data.trajectory_schema import (
+    TRAJECTORY_BASIS,
+    TRAJECTORY_PROMPT_END_VIEW,
+)
 from tasks import TASK_REGISTRY
 
 
@@ -72,6 +82,43 @@ def _parse_positive_int_set(value: object, *, field: str) -> set[int]:
     if not parsed or any(item < 1 for item in parsed):
         raise ValueError(f"{field} must contain positive integers")
     return parsed
+
+
+def _parse_view_csv(value: object) -> list[str]:
+    if isinstance(value, list):
+        values = [str(item).strip() for item in value]
+    else:
+        values = [item.strip() for item in str(value).split(",")]
+    parsed = [item for item in values if item]
+    if not parsed:
+        raise ValueError("views must contain at least one item")
+    if len(set(parsed)) != len(parsed):
+        raise ValueError("views must not contain duplicate activation views")
+    return parsed
+
+
+def _parse_percentile_list(value: object, *, field: str) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw = value
+    else:
+        raw = str(value).split(",")
+    percentiles: list[int] = []
+    for item in raw:
+        raw_item = str(item).strip()
+        if not raw_item:
+            continue
+        try:
+            percentile = int(raw_item)
+        except (TypeError, ValueError) as err:
+            raise ValueError(f"{field} must contain integers") from err
+        if not 1 <= percentile <= 100:
+            raise ValueError(f"{field} must contain integers in [1, 100]")
+        percentiles.append(percentile)
+    if not percentiles:
+        return []
+    return sorted(set(percentiles))
 
 
 def _validate_falsification_registry(
@@ -229,7 +276,12 @@ def _validate_claim_gates(cfg: dict, *, required: bool) -> None:
     if not isinstance(gates, dict):
         raise ValueError("claim_gates must be a mapping")
     expected = {
-        "primary_effect": "white_box_minus_selected_black_box_tpr",
+        "primary_effect": "mean_unseen_behavior_auew_uplift",
+        "primary_probe": "P8_citm",
+        "early_warning_basis": TRAJECTORY_BASIS,
+        "matched_visible_prefix_basis": "assistant_response_characters_v1",
+        "primary_inference": "paired_hierarchical_auew_bootstrap_v1",
+        "auew_weighting": "early_linear_v1",
         "reference_holdout_check": "selected_system_interval_not_above_budget_v1",
         "hard_negative_check": "fpr_noninferiority_and_pairwise_ordering_v1",
         "multiplicity_control": "holm_global",
@@ -237,6 +289,8 @@ def _validate_claim_gates(cfg: dict, *, required: bool) -> None:
     for key, value in expected.items():
         if gates.get(key) != value:
             raise ValueError(f"claim_gates.{key} must be {value!r}")
+    if int(gates.get("primary_k", -1)) != 8:
+        raise ValueError("claim_gates.primary_k must be 8")
     margin = float(gates.get("hard_negative_fpr_noninferiority_margin", -1.0))
     if not 0.0 <= margin <= 0.05:
         raise ValueError(
@@ -262,6 +316,8 @@ def _validate_frozen_artifact_provenance(
     required_provenance = {
         "selection_file",
         "selection_file_sha256",
+        "early_warning_selection_file",
+        "early_warning_selection_file_sha256",
         "base_config_sha256",
         "selection_k",
         "registry_sha256",
@@ -271,6 +327,7 @@ def _validate_frozen_artifact_provenance(
         raise ValueError(f"Frozen selection_provenance lacks fields {missing}")
     for key in (
         "selection_file_sha256",
+        "early_warning_selection_file_sha256",
         "base_config_sha256",
         "registry_sha256",
     ):
@@ -339,6 +396,24 @@ def _validate_labeled_confidence_data(
             f"{sorted(observed_labels - allowed_labels)}"
         )
     for example in examples:
+        if not reference_only:
+            outcome_class = str(
+                example.metadata.get("annotation_outcome_class") or ""
+            ).strip()
+            if not is_valid_model_outcome(outcome_class):
+                raise ValueError(
+                    f"Labeled data {path} contains a missing or invalid "
+                    "annotation_outcome_class; regenerate annotations with the "
+                    "current protocol"
+                )
+            dimensions = example.metadata.get("outcome_dimensions")
+            if (
+                not isinstance(dimensions, dict)
+                or not isinstance(dimensions.get("parseable"), bool)
+            ):
+                raise ValueError(
+                    f"Labeled data {path} contains invalid outcome_dimensions"
+                )
         if confidence_supported:
             confidence_feature_vector(example.metadata.get("generation"))
         if falsification_bundle is not None and not reference_only:
@@ -681,6 +756,32 @@ def _validate_feature_directory(
                         f"Feature bundle {bundle_path} lacks requested activation "
                         f"views {missing_views}"
                     )
+                trajectory_required = any(
+                    view.startswith("trajectory_") for view in required_views
+                )
+                if trajectory_required and (
+                    "trajectory_basis" not in bundle
+                    or str(bundle["trajectory_basis"].item()) != TRAJECTORY_BASIS
+                ):
+                    raise ValueError(
+                        f"Feature bundle {bundle_path} lacks the registered "
+                        f"trajectory basis {TRAJECTORY_BASIS}"
+                    )
+                if task_name != "reference_traffic":
+                    if "annotation_outcome_class" not in bundle:
+                        raise ValueError(
+                            f"Feature bundle {bundle_path} lacks outcome classes"
+                        )
+                    outcome_classes = np.asarray(
+                        bundle["annotation_outcome_class"]
+                    ).astype(str)
+                    if len(outcome_classes) != len(labels) or any(
+                        not is_valid_model_outcome(value)
+                        for value in outcome_classes
+                    ):
+                        raise ValueError(
+                            f"Feature bundle {bundle_path} has invalid outcome classes"
+                        )
                 for view in required_views:
                     activations = np.asarray(bundle[view])
                     if (
@@ -849,6 +950,7 @@ def _validate_final_falsification_coverage(
         for pair in cfg.get(key, [])
         if pair.get("source_task") in source_behaviors
         and pair.get("target_task") in heldout_behaviors
+        and pair.get("source_task") != pair.get("target_task")
     ]
     covered_behaviors = {pair["target_task"] for pair in behavior_pairs}
     if covered_behaviors != heldout_behaviors:
@@ -1036,18 +1138,40 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
             raise ValueError(f"{field} must be positive")
     if not str(cfg["views"]).strip() or not str(cfg["layers"]).strip():
         raise ValueError("views and layers must be non-empty")
-    activation_views = tuple(
-        value.strip()
-        for value in str(cfg["views"]).split(",")
-        if value.strip()
+    base_activation_views = _parse_view_csv(cfg["views"])
+    trajectory_prefix_stack_views = bool(cfg.get("trajectory_prefix_stack_views", False))
+    trajectory_prefix_percentiles = _parse_percentile_list(
+        cfg.get("trajectory_prefix_percentiles"),
+        field="trajectory_prefix_percentiles",
     )
-    if len(set(activation_views)) != len(activation_views):
-        raise ValueError("views must not contain duplicate activation views")
+    if trajectory_prefix_stack_views and not trajectory_prefix_percentiles:
+        raise ValueError(
+            "trajectory_prefix_stack_views requires trajectory_prefix_percentiles"
+        )
+    trajectory_views: list[str] = []
+    if trajectory_prefix_percentiles:
+        trajectory_views.append(TRAJECTORY_PROMPT_END_VIEW)
+        trajectory_views.extend(
+            f"trajectory_prefix_p{percentile}"
+            for percentile in trajectory_prefix_percentiles
+        )
+        if trajectory_prefix_stack_views:
+            trajectory_views.extend(
+                f"trajectory_prefix_stack_p{percentile}"
+                for percentile in trajectory_prefix_percentiles
+            )
+    activation_views = tuple(
+        dict.fromkeys([*base_activation_views, *trajectory_views])
+    )
     probes = {
         value.strip()
         for value in str(cfg["probes"]).split(",")
         if value.strip()
     }
+    if "P8_citm" in probes and not trajectory_prefix_stack_views:
+        raise ValueError(
+            "P8_citm requires trajectory_prefix_stack_views and registered percentiles"
+        )
     if not probes:
         raise ValueError("probes must contain at least one registered monitor")
     balance_modes = {
@@ -1135,24 +1259,34 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
         embedding_views = [
             value.strip() for value in embedding_views.split(",") if value.strip()
         ]
-    if embedding_views and (
-        not set(embedding_views).issubset(ALLOWED_TEXT_VIEWS)
-        or len(set(embedding_views)) != len(embedding_views)
-    ):
+    invalid_embedding_views = sorted(
+        view for view in embedding_views if not is_valid_text_view(view)
+    )
+    if invalid_embedding_views or len(set(embedding_views)) != len(embedding_views):
         raise ValueError(
-            f"Invalid text_embedding_views; choose from {sorted(ALLOWED_TEXT_VIEWS)}"
+            f"Invalid text_embedding_views: {invalid_embedding_views}"
         )
     judge_views = cfg.get("llm_judge_views", [])
     if isinstance(judge_views, str):
         judge_views = [
             value.strip() for value in judge_views.split(",") if value.strip()
         ]
-    if judge_views and (
-        not set(judge_views).issubset(ALLOWED_TEXT_VIEWS)
-        or len(set(judge_views)) != len(judge_views)
+    invalid_judge_views = sorted(
+        view for view in judge_views if not is_valid_text_view(view)
+    )
+    if invalid_judge_views or len(set(judge_views)) != len(judge_views):
+        raise ValueError(f"Invalid llm_judge_views: {invalid_judge_views}")
+    expected_prefix_text_views = {
+        response_prefix_text_view(percentile)
+        for percentile in trajectory_prefix_percentiles
+    }
+    if expected_prefix_text_views and (
+        not expected_prefix_text_views.issubset(embedding_views)
+        or not expected_prefix_text_views.issubset(judge_views)
     ):
         raise ValueError(
-            f"Invalid llm_judge_views; choose from {sorted(ALLOWED_TEXT_VIEWS)}"
+            "Trajectory experiments require matched response-prefix text views "
+            "for embedding and judge baselines"
         )
     judge_modes = cfg.get("llm_judge_modes", [])
     if isinstance(judge_modes, str):
@@ -1432,11 +1566,11 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
             raise ValueError(
                 f"Final execution lacks required black-box baselines: {missing_baselines}"
             )
-        if set(embedding_views) != ALLOWED_TEXT_VIEWS:
+        if not ALLOWED_TEXT_VIEWS.issubset(embedding_views):
             raise ValueError(
                 "Final execution requires prompt_text, answer_text, and transcript_text embedding views"
             )
-        if set(judge_views) != ALLOWED_TEXT_VIEWS:
+        if not ALLOWED_TEXT_VIEWS.issubset(judge_views):
             raise ValueError(
                 "Final execution requires prompt_text, answer_text, and transcript_text judge views"
             )
@@ -1532,6 +1666,75 @@ def validate_config(cfg: dict, *, check_paths: bool, final_protocol: bool) -> No
         if not primary_comparisons:
             raise ValueError(
                 "Final comparisons_file must define a primary_white_box_gain comparison"
+            )
+        early_selection = comparison_cfg.get("early_warning_selection")
+        if not isinstance(early_selection, list) or not early_selection:
+            raise ValueError(
+                "Final comparisons_file must freeze early_warning_selection"
+            )
+        required_early_fields = {
+            "model",
+            "source_task",
+            "k",
+            "prefix_alert_pct",
+            "white_probe",
+            "white_balance_mode",
+            "white_layer",
+            "white_view",
+            "black_probe",
+            "black_balance_mode",
+            "black_layer",
+            "black_view",
+            "selection_metric",
+            "selection_rule",
+        }
+        observed_early_keys: set[tuple[str, str, int]] = set()
+        for row in early_selection:
+            if not isinstance(row, dict):
+                raise ValueError(
+                    "Final early_warning_selection rows must be mappings"
+                )
+            if missing_early := required_early_fields.difference(row):
+                raise ValueError(
+                    "Final early_warning_selection row lacks fields "
+                    f"{sorted(missing_early)}"
+                )
+            percentile = int(row["prefix_alert_pct"])
+            if (
+                int(row["k"]) != int(cfg["selection_k"])
+                or row["white_probe"] != "P8_citm"
+                or row["white_view"]
+                != f"trajectory_prefix_stack_p{percentile}"
+                or row["black_view"]
+                != response_prefix_text_view(percentile)
+                or not str(row["black_probe"]).startswith("B")
+            ):
+                raise ValueError(
+                    "Final early_warning_selection contains an invalid "
+                    "white/black prefix identity"
+                )
+            observed_early_keys.add(
+                (
+                    str(row["model"]),
+                    str(row["source_task"]),
+                    percentile,
+                )
+            )
+        registered_sources = {
+            str(pair["source_task"])
+            for key in ("calibration_pairs", "transfer_pairs", "task_pairs")
+            for pair in cfg.get(key, [])
+        }
+        expected_early_keys = {
+            (str(model["name"]), source_task, percentile)
+            for model in models
+            for source_task in registered_sources
+            for percentile in trajectory_prefix_percentiles
+        }
+        if observed_early_keys != expected_early_keys:
+            raise ValueError(
+                "Final early_warning_selection has incomplete model/source/"
+                "prefix coverage"
             )
         for comparison in comparisons:
             for key in (

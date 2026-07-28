@@ -2,19 +2,21 @@
 
 ## Research question
 
-The primary question is whether a data-efficient activation monitor detects objectively defined model behaviors better than the strongest registered transcript-only monitor under the same operational alert budget.
+The primary question is whether internal activation trajectories provide an earlier warning of an unseen behavior than the strongest visible-prefix transcript monitor under the same operational alert budget.
 
-For monitored model \(m\), source behavior \(s\), target behavior \(t\), and label budget \(k\), the primary estimand is
+For monitored model \(m\), source behavior \(s\), unseen target behavior \(t\), and response-prefix fraction \(q\), define
 
 \[
-\Delta_{m,s,t,k}
+\Delta_{m,s,t}(q)
 =
-\operatorname{TPR}_{\text{white-box}}(\tau_{\text{white-box}})
+\operatorname{TPR}_{\text{P8}}(q;\tau_{\text{P8}})
 -
-\operatorname{TPR}_{\text{black-box}}(\tau_{\text{black-box}}),
+\operatorname{TPR}_{\text{black}}(q;\tau_{\text{black}}),
 \]
 
-where each threshold \(\tau\) is fitted independently by the same split-conformal rule on the same identities from unlabeled, on-policy reference traffic. The registered alert budget is \(\alpha=0.01\).
+where each threshold is fitted independently by the same split-conformal rule on the same identities from unlabeled, on-policy reference traffic. The registered alert budget is \(\alpha=0.01\). P8 uses cumulative assistant-response token prefixes; its matched black-box comparator sees the same response-progress fraction as visible text.
+
+At \(k=8\), the source-only selection stage freezes one P8 layer and one strongest black-box identity at each registered prefix. The primary endpoint is the equal-weight mean across registered model/target cells of the early-weighted area under \(\Delta(q)\). Prefixes are \(q\in\{0.10,0.25,0.50,0.75,1.00\}\). Hierarchical inference resamples few-shot seeds and scenario groups within each cell before averaging cells. Static full-answer white-box uplift and the remaining label budgets are secondary.
 
 This is an alert-budget estimand, not a false-positive-rate estimand. Reference traffic has no semantic negative label and may contain behaviors of interest at an unknown prevalence. The protocol therefore does not call the reference alert rate an FPR.
 
@@ -22,9 +24,9 @@ This is an alert-budget estimand, not a false-positive-rate estimand. Reference 
 
 The confirmatory evidence consists of:
 
-1. within-behavior final-test TPR at the reference alert budget;
-2. cross-behavior TPR at the unchanged source-trained monitor and threshold;
-3. white-box uplift over the selected transcript-only system;
+1. unseen-behavior early-warning AUEW uplift at \(k=8\);
+2. prefix-wise white-box uplift and lead-time curves;
+3. within-behavior and cross-behavior full-answer TPR;
 4. held-out reference alert rate with a 95% Wilson interval;
 5. exact-prompt hard-negative FPR, paired-positive TPR, score ordering, and score margin;
 6. performance on registered domain, template, presentation, encoding, and behavior shifts;
@@ -72,7 +74,7 @@ Labels are assigned only after generation:
 - auxiliary honesty controls use their frozen task-specific executable rule;
 - MonitorBench outcomes are imported only from its pinned official evaluator and remain a distinct evaluation-only construct.
 
-Ambiguous or unparsable outcomes are excluded according to the task rule before monitor training. No model judge assigns a primary behavior label.
+Every response with a parseable final answer is retained. Correct non-target answers, target-aligned answers, and other wrong or ambiguous answers have distinct outcome classes. The primary binary label remains behavior presence, while ordinary non-target errors form a deployment-negative slice whose frozen-threshold alert rate is reported separately. Only responses without a parseable final-answer marker or the metadata required by the executable rule are excluded. No model judge assigns a primary behavior label.
 
 ## Few-shot sampling
 
@@ -92,9 +94,12 @@ The registered activation systems are:
 - mass-mean classification;
 - linear discriminant analysis;
 - cosine-direction scoring;
-- shrinkage Mahalanobis scoring.
+- shrinkage Mahalanobis scoring;
+- sequence-aware P8 trajectory monitor (`P8_citm`) over cumulative trajectory-prefix features.
 
-Activations are extracted from zero-based transformer-block outputs using the model’s pinned chat template. The common cross-family view is the model answer. Reasoning-span views are secondary and eligible only when the frozen output format exposes the span without heuristic reconstruction.
+P8 is deliberately lightweight: it derives start, end, mean, temporal-difference, last-update, and maximum-update statistics from the cumulative prefix sequence, standardizes them using the few-shot training set, and fits regularized logistic regression. The name is a protocol identifier, not a claim that the monitor itself proves causal invariance.
+
+Activations are extracted from zero-based transformer-block outputs using the model's pinned chat template. The common cross-family static view is the model answer. Trajectory prefixes are defined only over assistant-response tokens, and a separate prompt-end control checks whether the experimental condition is already detectable before generation. Reasoning-span views are secondary and eligible only when the frozen output format exposes the span without heuristic reconstruction.
 
 Probe family, layer, and view are selected on source `eval` data at the frozen selection budget. That identity is reused for every \(k\), source test, and transfer target. Final-test labels never select a system.
 
@@ -109,7 +114,7 @@ The matched black-box family contains:
 
 Every black-box system receives the same label budget, group-aware samples, visible-text views, reference identities, target examples, and seeds as the activation systems. Encoder and judge caches are content-hashed and reused across seeds. The output-confidence baseline is unavailable when an upstream artifact does not expose the sampled token distribution; those features are never reconstructed by teacher forcing.
 
-The primary black-box comparator is selected on source `eval` data using the same fixed selection budget and deterministic tie-break used for white-box selection.
+For the early-warning endpoint, the strongest visible-prefix black-box comparator is selected independently at each prefix on source `eval` data. Zero-shot judges are emitted at every matched label budget while retaining `k_unit=no_labeled_examples`. The complete P8 and black-box prefix identities are embedded in the frozen comparison artifact before behavior-test predictions are inspected.
 
 ## Falsification design
 
@@ -128,7 +133,7 @@ Presentation and obfuscation variants are executable invariants:
 - `verbatim_wrapper_v1` places the exact source request inside a frozen wrapper;
 - `reversible_rot13_v1` encodes the exact source request and supplies a frozen decoding instruction.
 
-For each generated variant, the builder stores and verifies the parent/variant prompt hashes, source-payload hash, unchanged answer-metadata hash, executable inverse, and single-axis change. These tests support claims about robustness to exact presentation and encoding transformations. They do not support claims about robustness to free-form paraphrases.
+For each generated variant, the builder stores and verifies the parent/variant prompt hashes, source-payload hash, unchanged answer-metadata hash, executable inverse, and single-axis change. These tests support claims about robustness to exact presentation and encoding transformations. MonitorBench's official standard, direct-concealment, and monitor-aware conditions provide an additional externally defined stress evaluation. These runs do not establish robustness to learned activation obfuscation or adaptive fine-tuning; the attack utilities in this repository are non-confirmatory building blocks until a frozen model-backed attack protocol is registered.
 
 ## Exact-prompt hard negatives
 
@@ -145,7 +150,7 @@ The final protocol requires at least 100 independent hard-negative groups per en
 
 ## Statistical analysis
 
-Primary comparisons are declared before final-test inspection. Each comparison identifies the exact model, source task, target task, \(k\), probe, layer, view, balance mode, and comparator.
+Primary comparisons are declared before final-test inspection. Static comparisons identify the exact model, source task, target task, \(k\), probe, layer, view, balance mode, and comparator. The early-warning registry additionally freezes the P8 identity and black-box identity at every response prefix.
 
 Uncertainty is estimated with paired hierarchical resampling:
 
@@ -153,7 +158,7 @@ Uncertainty is estimated with paired hierarchical resampling:
 2. sample independent scenario groups with replacement;
 3. preserve all paired system predictions within each sampled group.
 
-The effect is system A minus system B. The output includes the observed difference, percentile confidence interval, and paired two-sided p-value. Registered falsification hypotheses share one global Holm correction family. Cross-model summaries retain model identity rather than treating model-by-example rows as independent.
+The effect is system A minus system B. The output includes the observed difference, percentile confidence interval, and paired two-sided p-value. For the primary AUEW endpoint, prefix curves are formed inside each seed-by-group cell, seeds and groups are resampled within each registered model/target cell, and cell effects are averaged with equal weight. Registered falsification hypotheses share one global Holm correction family. Cross-model summaries retain model identity rather than treating model-by-example rows as independent.
 
 The few-shot efficiency integral uses the registered metric across the complete \(k\) grid with frozen weights. Missing budgets are not interpolated.
 

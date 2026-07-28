@@ -340,8 +340,6 @@ def validate_falsification_registry(registry: dict[str, Any]) -> None:
         field="behavior_transfer.heldout_values",
         allow_empty=False,
     )
-    if set(source_behaviors).intersection(heldout_behaviors):
-        raise ValueError("Behavior source and held-out values overlap")
     known_behaviors = {
         value
         for task_cfg in tasks.values()

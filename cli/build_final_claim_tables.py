@@ -132,43 +132,48 @@ def main() -> None:
     selected_systems["reference_alert_budget_supported"] = (
         selected_systems["reference_alert_budget_status"] == "supported"
     )
+    early_inference_path = results_dir / "early_warning_primary_inference.csv"
+    if not early_inference_path.exists():
+        raise FileNotFoundError(
+            "Claim tables require early_warning_primary_inference.csv"
+        )
+    early_inference = pd.read_csv(early_inference_path)
+    required_early_fields = {
+        "endpoint",
+        "mean_diff",
+        "ci_low",
+        "ci_high",
+        "p_value",
+        "n_cells",
+        "status",
+    }
+    if missing_early := required_early_fields.difference(
+        early_inference.columns
+    ):
+        raise ValueError(
+            "Primary early-warning inference lacks fields "
+            f"{sorted(missing_early)}"
+        )
+    if len(early_inference) != 1:
+        raise ValueError(
+            "Primary early-warning inference must contain exactly one endpoint"
+        )
+    early_inference["claim_supported"] = (
+        (early_inference["ci_low"] > 0.0)
+        & (early_inference["p_value"] < 0.05)
+    )
+    early_inference["claim_gate_rule"] = (
+        "hierarchical AUEW uplift ci_low > 0 and p_value < 0.05"
+    )
     claims = pd.read_csv(results_dir / "claim_tests.csv") if (results_dir / "claim_tests.csv").exists() else pd.DataFrame()
     robust = pd.read_csv(results_dir / "robustness_summary.csv") if (results_dir / "robustness_summary.csv").exists() else pd.DataFrame()
     controls = pd.read_csv(results_dir / "negative_control_report.csv") if (results_dir / "negative_control_report.csv").exists() and (results_dir / "negative_control_report.csv").stat().st_size > 0 else pd.DataFrame()
 
-    main_table = selected_systems[
-        [
-            c
-            for c in [
-                "evaluation_regime",
-                "model",
-                "source_task",
-                "target_task",
-                "access_regime",
-                "probe",
-                "k",
-                "layer",
-                "view",
-                "transfer_tpr_at_1pct_reference_alert_budget_mean",
-                "transfer_auroc_mean",
-                "reference_holdout_alert_rate_mean",
-                "reference_holdout_alert_rate_ci_low",
-                "reference_holdout_alert_rate_ci_high",
-            ]
-            if c in transfer.columns
-        ]
-    ].copy()
-    main_table["reference_alert_budget_status"] = _reference_budget_status(
-        main_table["reference_holdout_alert_rate_ci_low"],
-        main_table["reference_holdout_alert_rate_ci_high"],
-        budget=reference_budget,
-    )
-    main_table["reference_alert_budget_supported"] = (
-        main_table["reference_alert_budget_status"] == "supported"
-    )
-    main_table = main_table.sort_values(["model", "source_task", "target_task"]).reset_index(drop=True)
+    main_table = early_inference.copy()
 
-    supporting_parts = []
+    supporting_parts = [
+        selected_systems.assign(section="static_selected_systems")
+    ]
     if not claims.empty:
         supporting_parts.append(claims.assign(section="claim_tests"))
     if not robust.empty:
@@ -218,8 +223,23 @@ def main() -> None:
         ]
     ].copy()
     hard_gate_rows["gate_name"] = "hard_negative"
+    early_gate_rows = early_inference[
+        [
+            "endpoint",
+            "mean_diff",
+            "ci_low",
+            "ci_high",
+            "p_value",
+            "claim_gate_rule",
+            "claim_supported",
+        ]
+    ].copy()
+    early_gate_rows["gate_name"] = "primary_early_warning_auew"
+    early_gate_rows["claim_gate_passed"] = early_gate_rows[
+        "claim_supported"
+    ]
     gate_status = pd.concat(
-        [reference_gate_rows, hard_gate_rows],
+        [early_gate_rows, reference_gate_rows, hard_gate_rows],
         ignore_index=True,
         sort=False,
     )

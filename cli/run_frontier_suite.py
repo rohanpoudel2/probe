@@ -72,7 +72,7 @@ def _print_artifact_status(cfg_path: Path, cfg: dict) -> None:
 
     missing: list[str] = []
     for label, path in _artifact_inputs(cfg):
-        status = "OK" if path.exists() else "MISSING"
+        status = "PRESENT" if path.exists() else "MISSING"
         print(f"  [{status}] {label}: {path}")
         if status == "MISSING":
             missing.append(f"{label}: {path}")
@@ -81,7 +81,10 @@ def _print_artifact_status(cfg_path: Path, cfg: dict) -> None:
         for line in missing:
             print(f"  - {line}")
     else:
-        print("All declared artifacts are present.")
+        print(
+            "All declared artifacts are present; the validation command still "
+            "checks schema, provenance, and completeness."
+        )
 
 
 def _command_preview(cmd: list[str], *, dry_run: bool) -> None:
