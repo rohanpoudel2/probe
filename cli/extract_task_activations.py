@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import subprocess
+import time
 from pathlib import Path
 from typing import List
 
@@ -106,6 +107,26 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--checkpoint_examples",
+        type=int,
+        default=32,
+        help="Atomically checkpoint this many examples at a time (default: 32).",
+    )
+    parser.add_argument(
+        "--max_wall_time_minutes",
+        type=float,
+        default=None,
+        help=(
+            "Stop cleanly between activation checkpoints after this much extraction "
+            "time. Rerun the identical command to resume."
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Recompute completed splits and checkpoint chunks instead of resuming.",
+    )
+    parser.add_argument(
         "--allow_dirty_code",
         action="store_true",
         help="Permit a dirty Git worktree for an explicitly non-confirmatory debug run.",
@@ -116,6 +137,10 @@ def main() -> None:
         help="Execution device: auto|cpu|cuda|cuda:N|mps",
     )
     args = parser.parse_args()
+    if args.checkpoint_examples < 1:
+        raise ValueError("checkpoint_examples must be positive")
+    if args.max_wall_time_minutes is not None and args.max_wall_time_minutes <= 0:
+        raise ValueError("max_wall_time_minutes must be positive")
 
     task = TASK_REGISTRY[args.task]()
     data_path = Path(args.data)
@@ -157,10 +182,27 @@ def main() -> None:
         )
     )
 
+    deadline_monotonic = (
+        time.monotonic() + args.max_wall_time_minutes * 60.0
+        if args.max_wall_time_minutes is not None
+        else None
+    )
     for split_name, split_examples in splits.items():
         if split_examples:
-            extractor.extract_split(split_examples, split_name)
-            print(f"saved {split_name} -> {len(split_examples)} examples")
+            completed = extractor.extract_split(
+                split_examples,
+                split_name,
+                checkpoint_examples=args.checkpoint_examples,
+                resume=not args.overwrite,
+                deadline_monotonic=deadline_monotonic,
+            )
+            if not completed:
+                print(
+                    f"checkpointed {split_name}; rerun the identical command "
+                    "without --overwrite to continue"
+                )
+                break
+            print(f"ready {split_name} -> {len(split_examples)} input examples")
 
 
 if __name__ == "__main__":

@@ -77,6 +77,59 @@ def test_heldout_prompt_template_is_test_only(tmp_path) -> None:
     } == {"heldout"}
 
 
+def test_sycophancy_builder_resolves_pinned_letter_only_rows(tmp_path) -> None:
+    source_dir = tmp_path / "sycophancy_eval"
+    source_dir.mkdir()
+    row = {
+        "prompt": [{"type": "human", "content": "Which number is even?\n(A) 3\n(B) 4"}],
+        "base": {
+            "question": "Which number is even?",
+            "answers": "(A) 3\n(B) 4",
+            "correct_letter": "B",
+        },
+    }
+    (source_dir / "are_you_sure.jsonl").write_text(
+        json.dumps(row) + "\n", encoding="utf-8"
+    )
+    scenarios = build_sycophancy_scenarios(
+        tmp_path, ["are_you_sure"], "a" * 40, 42
+    )
+    assert len(scenarios) == 2
+    assert scenarios[0]["metadata"]["gold_answer"] == "4"
+    assert scenarios[0]["metadata"]["pressure_target"] == "3"
+
+
+def test_overlapping_heldout_templates_do_not_consume_all_source_groups(tmp_path) -> None:
+    source_dir = tmp_path / "sycophancy_eval"
+    source_dir.mkdir()
+    answer_rows = []
+    heldout_rows = []
+    for index in range(100):
+        base = {
+            "question": f"Question {index}?",
+            "correct_answer": "yes",
+            "incorrect_answer": "no",
+        }
+        answer_rows.append({"prompt": f"Question {index}?", "base": base})
+        heldout_rows.append({"prompt": f"Are you sure about {index}?", "base": base})
+    (source_dir / "answer.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in answer_rows), encoding="utf-8"
+    )
+    (source_dir / "are_you_sure.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in heldout_rows), encoding="utf-8"
+    )
+    scenarios = build_sycophancy_scenarios(
+        tmp_path, ["answer", "are_you_sure"], "a" * 40, 42
+    )
+    source_splits = {
+        row["protocol_split"]
+        for row in scenarios
+        if row["metadata"]["falsification"]["axes"]["template"]["role"]
+        == "source"
+    }
+    assert {"train", "eval", "test"}.issubset(source_splits)
+
+
 def test_honesty_control_builder_pairs_neutral_and_pressure_conditions(tmp_path) -> None:
     source_dir = tmp_path / "honesty_control_raw"
     source_dir.mkdir()

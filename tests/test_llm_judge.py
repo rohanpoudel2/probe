@@ -6,6 +6,7 @@ import torch
 
 from cli.run_llm_judge_baselines import (
     _load_judge_spec,
+    _score_bundle_with_checkpoints,
     contextual_label_token_ids,
     pairwise_positive_probability,
 )
@@ -110,6 +111,54 @@ def test_judge_cache_is_context_bound(tmp_path) -> None:
     assert loaded["split_payload_sha256"]["source_test"]
     with pytest.raises(ValueError, match="requested scoring context"):
         load_judge_cache(path, expected_context_hash="0" * 64)
+
+
+def test_judge_scoring_resumes_from_example_chunks(tmp_path) -> None:
+    bundle = {
+        "texts": np.asarray(["a", "b", "c"]),
+        "labels": np.asarray([0, 1, 0]),
+        "example_ids": np.asarray(["e0", "e1", "e2"]),
+        "question_ids": np.asarray(["q0", "q1", "q2"]),
+    }
+
+    class Runtime:
+        calls = 0
+        resolved_device = "cpu"
+        model_parameter_dtype = "torch.float32"
+        batch_size = 2
+
+        def score_bundle(self, chunk, demonstrations):
+            self.calls += 1
+            return {
+                "labels": chunk["labels"],
+                "scores": chunk["labels"].astype(float),
+                "example_ids": chunk["example_ids"],
+                "question_ids": chunk["question_ids"],
+                "prompt_sha256": np.asarray(["a" * 64] * len(chunk["labels"])),
+                "prompt_token_lengths": np.ones(len(chunk["labels"]), dtype=np.int64),
+            }
+
+    runtime = Runtime()
+    first = _score_bundle_with_checkpoints(
+        runtime,
+        bundle,
+        [],
+        checkpoint_dir=tmp_path / "chunks",
+        checkpoint_examples=2,
+    )
+    assert runtime.calls == 2
+    assert first["example_ids"].tolist() == ["e0", "e1", "e2"]
+
+    resumed = Runtime()
+    second = _score_bundle_with_checkpoints(
+        resumed,
+        bundle,
+        [],
+        checkpoint_dir=tmp_path / "chunks",
+        checkpoint_examples=2,
+    )
+    assert resumed.calls == 0
+    assert second["scores"].tolist() == [0.0, 1.0, 0.0]
 
 
 def test_registered_primary_judge_is_fully_pinned() -> None:

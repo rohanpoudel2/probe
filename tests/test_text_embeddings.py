@@ -2,7 +2,11 @@ import numpy as np
 import pytest
 import torch
 
-from cli.extract_text_embeddings import pool_hidden_states, render_embedding_input
+from cli.extract_text_embeddings import (
+    _validate_resumable_cache,
+    pool_hidden_states,
+    render_embedding_input,
+)
 from cli.run_embedding_baselines import _assert_compatible
 from data.schema import TaskExample
 from data.text_embedding_cache import (
@@ -101,6 +105,21 @@ def test_embedding_cache_round_trip_and_compatibility(tmp_path) -> None:
     incompatible = load_text_embedding_cache(incompatible_path)
     with pytest.raises(ValueError, match="instruction differs"):
         _assert_compatible(first, incompatible)
+
+
+def test_resume_requires_matching_embedding_cache_identity(tmp_path) -> None:
+    metadata = _metadata()
+    _validate_resumable_cache(
+        tmp_path / "cache.npz",
+        metadata,
+        {"dataset_sha256": metadata["dataset_sha256"], "view": "answer_text"},
+    )
+    with pytest.raises(ValueError, match="dataset_sha256"):
+        _validate_resumable_cache(
+            tmp_path / "cache.npz",
+            metadata,
+            {"dataset_sha256": "0" * 64},
+        )
 
 
 def test_embedding_input_uses_locked_instruction_format() -> None:

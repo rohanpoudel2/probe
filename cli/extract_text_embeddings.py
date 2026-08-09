@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from data.rollout_schema import canonical_json
 from data.text_embedding_cache import (
     TEXT_EMBEDDING_SCHEMA_VERSION,
     atomic_save_text_embedding_cache,
+    load_text_embedding_cache,
 )
 from data.text_views import (
     examples_to_text_arrays,
@@ -25,6 +27,19 @@ from tasks import TASK_REGISTRY
 
 
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _validate_resumable_cache(
+    path: Path, metadata: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    mismatches = [
+        key for key, value in expected.items() if metadata.get(key) != value
+    ]
+    if mismatches:
+        raise ValueError(
+            f"Existing text embedding cache {path} is incompatible in {mismatches}; "
+            "use --overwrite only if recomputation is intentional"
+        )
 
 
 def _git_state() -> tuple[str, bool]:
@@ -199,11 +214,22 @@ def main() -> None:
     parser.add_argument("--allow_dirty_code", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
+        "--max_wall_time_minutes",
+        type=float,
+        default=None,
+        help=(
+            "Stop cleanly between completed text-view caches after this much "
+            "encoding time. Rerun the identical command to resume."
+        ),
+    )
+    parser.add_argument(
         "--device",
         default="auto",
         help="Execution device: auto|cpu|cuda|cuda:N|mps",
     )
     args = parser.parse_args()
+    if args.max_wall_time_minutes is not None and args.max_wall_time_minutes <= 0:
+        raise ValueError("max_wall_time_minutes must be positive")
 
     views = [value.strip() for value in args.views.split(",") if value.strip()]
     invalid_views = sorted(view for view in views if not is_valid_text_view(view))
@@ -234,6 +260,38 @@ def main() -> None:
     split_values = {str(example.metadata.get("protocol_split") or "") for example in examples}
     if not split_values.issubset({"train", "calibration", "eval", "test"}):
         raise ValueError(f"Dataset contains invalid protocol splits: {sorted(split_values)}")
+
+    output_dir = Path(args.output_dir)
+    pending_views: list[str] = []
+    for view in views:
+        output_path = output_dir / f"{args.task}__{view}.npz"
+        if not output_path.exists() or args.overwrite:
+            pending_views.append(view)
+            continue
+        cached = load_text_embedding_cache(
+            output_path,
+            require_clean_code=not args.allow_dirty_code,
+        )
+        _validate_resumable_cache(
+            output_path,
+            cached["metadata"],
+            {
+                "task_name": args.task,
+                "view": view,
+                "dataset_sha256": dataset_hash,
+                "code_revision": code_revision,
+                "embedding_model_id": spec["model_id"],
+                "embedding_model_revision": spec["model_revision"],
+                "embedding_tokenizer_revision": spec["tokenizer_revision"],
+                "embedding_spec_sha256": spec_hash,
+                "embedding_config_sha256": config_hash,
+                **identity,
+            },
+        )
+        print(json.dumps({"skipped": str(output_path), "reason": "validated cache"}))
+    if not pending_views:
+        print(f"completed 0 new caches; all {len(views)} requested caches already exist")
+        return
 
     from transformers import AutoModel, AutoTokenizer
     from cli.common import (
@@ -269,12 +327,20 @@ def main() -> None:
     model.eval()
     model.requires_grad_(False)
 
-    output_dir = Path(args.output_dir)
     completed = 0
-    for view in views:
+    deadline_monotonic = (
+        time.monotonic() + args.max_wall_time_minutes * 60.0
+        if args.max_wall_time_minutes is not None
+        else None
+    )
+    for view in pending_views:
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            print(
+                "wall-time limit reached at a durable text-view boundary; rerun "
+                "the identical command to continue"
+            )
+            break
         output_path = output_dir / f"{args.task}__{view}.npz"
-        if output_path.exists() and not args.overwrite:
-            raise FileExistsError(f"Refusing to overwrite existing cache {output_path}")
         arrays = examples_to_text_arrays(examples, view)
         raw_texts = arrays.pop("texts").tolist()
         rendered = [render_embedding_input(text, spec) for text in raw_texts]

@@ -14,6 +14,7 @@ from data.falsification import (
 )
 from data.rollout_schema import ScenarioRecord
 from data.source_adapters import (
+    choice_list,
     ensure_text,
     first_text,
     format_mcq_prompt,
@@ -103,6 +104,28 @@ def _enforce_heldout_group_splits(rows: list[dict[str, Any]]) -> list[dict[str, 
     return output
 
 
+def _reserve_overlapping_heldout_groups(
+    rows: list[dict[str, Any]], split_seed: int
+) -> list[dict[str, Any]]:
+    roles_by_group: dict[str, set[str]] = {}
+    for row in rows:
+        template = row["metadata"]["falsification"]["axes"]["template"]
+        roles_by_group.setdefault(str(row["group_id"]), set()).add(template["role"])
+    overlapping = {
+        group for group, roles in roles_by_group.items() if roles == {"source", "heldout"}
+    }
+    return [
+        row
+        for row in rows
+        if not (
+            str(row["group_id"]) in overlapping
+            and row["metadata"]["falsification"]["axes"]["template"]["role"]
+            == "heldout"
+            and _hashed_split(str(row["group_id"]), split_seed) != "test"
+        )
+    ]
+
+
 def _honesty_context(row: dict[str, Any]) -> str | None:
     return first_text(
         row,
@@ -174,6 +197,30 @@ def _honesty_group_prefix(row: dict[str, Any], split_name: str) -> str:
     if explicit_text:
         return f"mask_{split_name}_{explicit_text}"
     return f"mask_{split_name}"
+
+
+def _sycophancy_targets(base: dict[str, Any]) -> tuple[str, str, str | None, str | None] | None:
+    choices = choice_list(base)
+    correct_label = ensure_text(base.get("correct_letter"))
+    pressure_label = ensure_text(base.get("wrong_letter"))
+    correct = normalize_answer_text(base.get("correct_answer") or base.get("answer"))
+    pressure_target = normalize_answer_text(
+        base.get("incorrect_answer") or base.get("wrong_answer")
+    )
+    if correct == "unknown" and correct_label:
+        index = ord(correct_label.upper()) - ord("A")
+        if 0 <= index < len(choices):
+            correct = choices[index]
+    if pressure_target == "unknown" and pressure_label:
+        index = ord(pressure_label.upper()) - ord("A")
+        if 0 <= index < len(choices):
+            pressure_target = choices[index]
+    if pressure_target == "unknown" and choices and correct in choices:
+        pressure_target = pick_wrong_answer(correct, choices)
+        pressure_label = chr(ord("A") + choices.index(pressure_target))
+    if correct == "unknown" or pressure_target == "unknown" or correct == pressure_target:
+        return None
+    return correct, pressure_target, correct_label, pressure_label
 
 
 def build_honesty_control_scenarios(
@@ -282,22 +329,19 @@ def build_sycophancy_scenarios(
             )
             prompt_text = first_text(raw, ("prompt", "messages", "conversation"))
             question = ensure_text(base.get("question")) or prompt_text
-            correct = normalize_answer_text(
-                base.get("correct_answer") or base.get("answer")
-            )
-            pressure_target = normalize_answer_text(base.get("incorrect_answer"))
-            if (
-                not question
-                or not prompt_text
-                or correct == "unknown"
-                or pressure_target == "unknown"
-            ):
+            targets = _sycophancy_targets(base)
+            if targets is None:
+                continue
+            correct, pressure_target, correct_label, pressure_label = targets
+            if not question or not prompt_text:
                 raise ValueError(f"Unresolvable sycophancy record {path}:{index + 1}")
             group_id = f"syc_{_normalized_hash(question)[:20]}"
             split = _hashed_split(group_id, split_seed)
             shared_metadata = {
                 "gold_answer": correct,
+                "gold_option_label": correct_label,
                 "pressure_target": pressure_target,
+                "pressure_option_label": pressure_label,
                 "prompt_template": ensure_text(metadata.get("prompt_template"))
                 or file_key,
                 "source_row": index,
@@ -342,7 +386,9 @@ def build_sycophancy_scenarios(
                     metadata=shared_metadata,
                 )
                 rows.append(_scenario_dict(record))
-    return _enforce_heldout_group_splits(rows)
+    return _enforce_heldout_group_splits(
+        _reserve_overlapping_heldout_groups(rows, split_seed)
+    )
 
 
 def build_motivated_reasoning_scenarios(
@@ -376,7 +422,9 @@ def build_motivated_reasoning_scenarios(
             if not question:
                 raise ValueError(f"Missing question at {path}:{index + 1}")
             correct, choices = resolve_correct_choice(raw)
-            if correct == "unknown" or len(choices) < 2 or correct not in choices:
+            if correct == "unknown":
+                continue
+            if len(choices) < 2 or correct not in choices:
                 raise ValueError(f"Unresolvable choices at {path}:{index + 1}")
             pressure_target = pick_wrong_answer(correct, choices)
             # Some upstream MCQ rows (notably mmlu auxiliary_train) are malformed:
