@@ -5,11 +5,21 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from data.rollout_schema import RolloutRecord, ScenarioRecord, content_hash
 from data.generation_confidence import build_generation_confidence_trace
+
+
+def _deadline_reached(
+    deadline_monotonic: float | None, *, now_monotonic: float | None = None
+) -> bool:
+    if deadline_monotonic is None:
+        return False
+    now = time.monotonic() if now_monotonic is None else now_monotonic
+    return now >= deadline_monotonic
 
 
 def _read_scenarios(path: Path) -> list[ScenarioRecord]:
@@ -158,6 +168,15 @@ def main() -> None:
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
+        "--max_wall_time_minutes",
+        type=float,
+        default=None,
+        help=(
+            "Stop cleanly between completed rollouts after this much generation "
+            "time. Rerun the identical command to resume."
+        ),
+    )
+    parser.add_argument(
         "--device",
         default="auto",
         help="Execution device: auto|cpu|cuda|cuda:N|mps",
@@ -179,6 +198,8 @@ def main() -> None:
         raise ValueError("--model_revision must be immutable, not main/latest/unpinned")
     if args.num_rollouts < 1 or args.max_new_tokens < 1:
         raise ValueError("num_rollouts and max_new_tokens must be positive")
+    if args.max_wall_time_minutes is not None and args.max_wall_time_minutes <= 0:
+        raise ValueError("max_wall_time_minutes must be positive")
     if args.temperature < 0.0 or not 0.0 < args.top_p <= 1.0:
         raise ValueError("temperature must be non-negative and top_p must be in (0, 1]")
     if args.num_rollouts > 1 and args.temperature == 0.0:
@@ -240,8 +261,33 @@ def main() -> None:
     }
 
     generated_count = 0
+    deadline_monotonic = (
+        time.monotonic() + args.max_wall_time_minutes * 60.0
+        if args.max_wall_time_minutes is not None
+        else None
+    )
+    stopped_at_checkpoint = False
     with output.open("a", encoding="utf-8") as handle:
         for scenario_index, scenario in enumerate(scenarios):
+            pending_rollouts: list[tuple[int, int, str]] = []
+            for replicate in range(args.num_rollouts):
+                rollout_seed = (
+                    args.seed + scenario_index * args.num_rollouts + replicate
+                )
+                rollout_id = _rollout_id(
+                    scenario,
+                    args.model,
+                    args.model_revision,
+                    replicate,
+                    rollout_seed,
+                )
+                if rollout_id not in completed:
+                    pending_rollouts.append((replicate, rollout_seed, rollout_id))
+            if not pending_rollouts:
+                continue
+            if _deadline_reached(deadline_monotonic):
+                stopped_at_checkpoint = True
+                break
             # The prompt encoding depends only on the scenario, not the replicate
             # or seed, so build it once per scenario. Sampling randomness is set
             # by set_seed() immediately before each generate() call below, and
@@ -264,15 +310,10 @@ def main() -> None:
             encoded = {
                 key: value.to(model_device) for key, value in encoded.items()
             }
-            for replicate in range(args.num_rollouts):
-                rollout_seed = (
-                    args.seed + scenario_index * args.num_rollouts + replicate
-                )
-                rollout_id = _rollout_id(
-                    scenario, args.model, args.model_revision, replicate, rollout_seed
-                )
-                if rollout_id in completed:
-                    continue
+            for replicate, rollout_seed, rollout_id in pending_rollouts:
+                if _deadline_reached(deadline_monotonic):
+                    stopped_at_checkpoint = True
+                    break
                 set_seed(rollout_seed)
                 kwargs = {
                     "max_new_tokens": args.max_new_tokens,
@@ -361,10 +402,17 @@ def main() -> None:
                 os.fsync(handle.fileno())
                 completed.add(rollout_id)
                 generated_count += 1
+            if stopped_at_checkpoint:
+                break
 
     print(
         f"generated {generated_count} new rollouts; {len(completed)} total in {output}"
     )
+    if stopped_at_checkpoint:
+        print(
+            "wall-time limit reached at a durable rollout boundary; rerun the "
+            "identical command to continue"
+        )
 
 
 if __name__ == "__main__":

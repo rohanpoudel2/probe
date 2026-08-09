@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -89,6 +90,7 @@ def choice_list(row: dict[str, Any]) -> list[str]:
         or row.get("options")
         or row.get("candidates")
         or row.get("answer_choices")
+        or row.get("answers_list")
     )
     if isinstance(value, list):
         choices: list[str] = []
@@ -113,6 +115,22 @@ def choice_list(row: dict[str, Any]) -> list[str]:
             item.strip()
             for key in sorted(value)
             if isinstance((item := value[key]), str) and item.strip()
+        ]
+    lettered = [
+        str(row[letter]).strip()
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        if isinstance(row.get(letter), str) and str(row[letter]).strip()
+    ]
+    if lettered:
+        return lettered
+    answers = row.get("answers")
+    if isinstance(answers, str):
+        return [
+            text.strip()
+            for text in re.findall(
+                r"\([A-Z]\)\s*(.*?)(?=\n\([A-Z]\)|$)", answers, re.DOTALL
+            )
+            if text.strip()
         ]
     return []
 

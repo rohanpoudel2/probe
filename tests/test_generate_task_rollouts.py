@@ -1,7 +1,14 @@
 from cli.generate_task_rollouts import (
+    _deadline_reached,
     _generation_stop_reason,
     _split_reasoning,
 )
+
+
+def test_generation_deadline_is_optional_and_inclusive() -> None:
+    assert not _deadline_reached(None, now_monotonic=100.0)
+    assert not _deadline_reached(100.0, now_monotonic=99.9)
+    assert _deadline_reached(100.0, now_monotonic=100.0)
 
 
 def test_reasoning_is_split_before_special_tokens_are_removed() -> None:

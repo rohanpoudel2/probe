@@ -36,7 +36,7 @@ sources:
     datasets:
       - name: mmlu
         repo: cais/mmlu
-        revision: "c30699e"
+        revision: "c30699e8356da336a370243923dbaf21066bb9fe"
         subset: all
         splits:
           source_train: auxiliary_train
@@ -44,7 +44,7 @@ sources:
           test: test
       - name: arc_challenge
         repo: allenai/ai2_arc
-        revision: "1664417"
+        revision: "16644173ab25fa007c815e3204a8b59a4034ba1b"
         subset: ARC-Challenge
         splits:
           train: train
@@ -52,7 +52,7 @@ sources:
           test: test
       - name: commonsense_qa
         repo: tau/commonsense_qa
-        revision: "94630fe"
+        revision: "94630fe30dad47192a8546eb75f094926d47e155"
         subset: default
         splits:
           train: train
@@ -60,7 +60,7 @@ sources:
           test: test
       - name: aqua_rat
         repo: deepmind/aqua_rat
-        revision: "33301c6"
+        revision: "33301c6a050c96af81f63cad5562cb5363e88971"
         subset: raw
         splits:
           train: train

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,111 @@ JUDGE_IMPLEMENTATION_FILES = (
     Path(__file__).parents[1] / "data" / "llm_judge.py",
     Path(__file__).parents[1] / "data" / "llm_judge_cache.py",
 )
+JUDGE_SCORE_KEYS = (
+    "labels",
+    "scores",
+    "example_ids",
+    "question_ids",
+    "prompt_sha256",
+    "prompt_token_lengths",
+)
+
+
+def _atomic_save_score_shard(
+    path: Path,
+    scored: dict[str, np.ndarray],
+    *,
+    checkpoint_identity: dict[str, object],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("wb") as handle:
+        np.savez_compressed(
+            handle,
+            **{key: np.asarray(scored[key]) for key in JUDGE_SCORE_KEYS},
+            checkpoint_identity_json=np.asarray(
+                canonical_json(checkpoint_identity)
+            ),
+        )
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(path)
+
+
+def _load_score_shard(
+    path: Path,
+    *,
+    expected_example_ids: np.ndarray,
+    checkpoint_identity: dict[str, object],
+) -> dict[str, np.ndarray]:
+    with np.load(path, allow_pickle=False) as bundle:
+        missing = [key for key in JUDGE_SCORE_KEYS if key not in bundle]
+        if missing:
+            raise ValueError(f"Judge checkpoint {path} is missing {missing}")
+        if (
+            "checkpoint_identity_json" not in bundle
+            or str(bundle["checkpoint_identity_json"].item())
+            != canonical_json(checkpoint_identity)
+        ):
+            raise ValueError(f"Judge checkpoint {path} has incompatible provenance")
+        scored = {key: np.asarray(bundle[key]) for key in JUDGE_SCORE_KEYS}
+    observed_ids = scored["example_ids"].astype(str)
+    expected_ids = np.asarray(expected_example_ids).astype(str)
+    if not np.array_equal(observed_ids, expected_ids) or any(
+        value.ndim != 1 or len(value) != len(expected_ids)
+        for value in scored.values()
+    ):
+        raise ValueError(f"Judge checkpoint {path} does not match its input examples")
+    scores = scored["scores"].astype(float)
+    if not np.all(np.isfinite(scores)) or np.any((scores < 0.0) | (scores > 1.0)):
+        raise ValueError(f"Judge checkpoint {path} contains invalid scores")
+    return scored
+
+
+def _score_bundle_with_checkpoints(
+    runtime: "JudgeRuntime",
+    bundle: dict[str, np.ndarray],
+    demonstrations: list[tuple[str, int]],
+    *,
+    checkpoint_dir: Path,
+    checkpoint_examples: int,
+) -> dict[str, np.ndarray]:
+    if checkpoint_examples < 1:
+        raise ValueError("judge_checkpoint_examples must be positive")
+    checkpoint_identity = {
+        "resolved_device": runtime.resolved_device,
+        "model_parameter_dtype": runtime.model_parameter_dtype,
+        "effective_batch_size": runtime.batch_size,
+    }
+    chunks: list[dict[str, np.ndarray]] = []
+    for chunk_index, start in enumerate(
+        range(0, len(bundle["labels"]), checkpoint_examples)
+    ):
+        stop = min(start + checkpoint_examples, len(bundle["labels"]))
+        chunk_bundle = {
+            key: np.asarray(value)[start:stop] for key, value in bundle.items()
+        }
+        checkpoint_path = checkpoint_dir / f"chunk_{chunk_index:06d}.npz"
+        if checkpoint_path.exists():
+            scored_chunk = _load_score_shard(
+                checkpoint_path,
+                expected_example_ids=chunk_bundle["example_ids"],
+                checkpoint_identity=checkpoint_identity,
+            )
+        else:
+            scored_chunk = runtime.score_bundle(chunk_bundle, demonstrations)
+            _atomic_save_score_shard(
+                checkpoint_path,
+                scored_chunk,
+                checkpoint_identity=checkpoint_identity,
+            )
+        chunks.append(scored_chunk)
+    if not chunks:
+        raise ValueError("Cannot score an empty judge bundle")
+    return {
+        key: np.concatenate([chunk[key] for chunk in chunks], axis=0)
+        for key in JUDGE_SCORE_KEYS
+    }
 
 
 def _git_state() -> tuple[str, bool]:
@@ -397,6 +503,15 @@ def main() -> None:
     parser.add_argument("--judge_model_key", required=True)
     parser.add_argument("--judge_cache_dir", required=True)
     parser.add_argument("--judge_batch_size", type=int, default=8)
+    parser.add_argument(
+        "--judge_checkpoint_examples",
+        type=int,
+        default=16,
+        help=(
+            "Atomically checkpoint this many judge-scored examples at a time "
+            "(default: 16)."
+        ),
+    )
     parser.add_argument("--model", required=True)
     parser.add_argument("--results_dir", required=True)
     parser.add_argument("--views", default="prompt_text,answer_text,transcript_text")
@@ -419,6 +534,8 @@ def main() -> None:
         help="Score source eval and reference traffic without touching test targets.",
     )
     args = parser.parse_args()
+    if args.judge_checkpoint_examples < 1:
+        raise ValueError("judge_checkpoint_examples must be positive")
 
     if bool(args.target_task) != bool(args.target_data):
         raise ValueError("--target_task and --target_data must be provided together")
@@ -585,6 +702,10 @@ def main() -> None:
                         raise ValueError(
                             f"Judge cache {cache_path} was produced from dirty code"
                         )
+                    shutil.rmtree(
+                        cache_dir / ".checkpoints" / context_hash,
+                        ignore_errors=True,
+                    )
                 else:
                     if runtime is None:
                         runtime = JudgeRuntime(
@@ -601,8 +722,17 @@ def main() -> None:
                         bundles["source_test"] = source["test"]
                     if target is not None and not args.selection_only:
                         bundles["target_test"] = target
+                    context_checkpoint_dir = (
+                        cache_dir / ".checkpoints" / context_hash
+                    )
                     scored = {
-                        split_name: runtime.score_bundle(bundle, demonstrations)
+                        split_name: _score_bundle_with_checkpoints(
+                            runtime,
+                            bundle,
+                            demonstrations,
+                            checkpoint_dir=context_checkpoint_dir / split_name,
+                            checkpoint_examples=args.judge_checkpoint_examples,
+                        )
                         for split_name, bundle in bundles.items()
                     }
                     cache_metadata = {
@@ -641,6 +771,7 @@ def main() -> None:
                         expected_context_hash=context_hash,
                         expected_splits=expected_splits,
                     )
+                    shutil.rmtree(context_checkpoint_dir, ignore_errors=True)
 
                 result_seeds = (
                     range(args.seeds) if mode == "zero_shot" else [context_seed]

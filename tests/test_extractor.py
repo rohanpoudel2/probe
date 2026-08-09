@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -64,6 +65,10 @@ def _extractor(**overrides):
     extractor.cfg = cfg
     extractor.tokenizer = CharacterTokenizer()
     extractor.model = HiddenStateFixture()
+    extractor.resolved_device = "cpu"
+    extractor.model_parameter_device = "cpu"
+    extractor.model_parameter_dtype = "torch.float32"
+    extractor.chat_template_sha256 = "f" * 64
     return extractor
 
 
@@ -100,3 +105,47 @@ def test_missing_requested_view_fails_loudly() -> None:
     extractor = _extractor(views=["reasoning"])
     with pytest.raises(ValueError, match="missing requested views"):
         extractor._tokenize_segments(_example())
+
+
+def test_split_extraction_resumes_from_atomic_chunk_checkpoints(
+    tmp_path, monkeypatch
+) -> None:
+    output_dir = tmp_path / "features"
+    extractor = _extractor(
+        output_dir=str(output_dir),
+        dataset_sha256="d" * 64,
+        code_revision="c" * 40,
+    )
+    first = replace(_example(), task_family="reference_traffic")
+    second = replace(first, example_id="r2", question_id="q2")
+
+    ticks = iter([0.0, 2.0])
+    monkeypatch.setattr(
+        "extraction.task_extractor.time.monotonic", lambda: next(ticks)
+    )
+    assert not extractor.extract_split(
+        [first, second],
+        "train",
+        checkpoint_examples=1,
+        deadline_monotonic=1.0,
+    )
+
+    resumed = _extractor(
+        output_dir=str(output_dir),
+        dataset_sha256="d" * 64,
+        code_revision="c" * 40,
+    )
+    original_extract = resumed.extract_example_with_metadata
+    recomputed_ids = []
+
+    def record_extract(example):
+        recomputed_ids.append(example.example_id)
+        return original_extract(example)
+
+    monkeypatch.setattr(resumed, "extract_example_with_metadata", record_extract)
+    assert resumed.extract_split(
+        [first, second], "train", checkpoint_examples=1
+    )
+    assert recomputed_ids == ["r2"]
+    with np.load(output_dir / "train_layer0.npz", allow_pickle=False) as bundle:
+        assert bundle["example_ids"].astype(str).tolist() == ["r1", "r2"]

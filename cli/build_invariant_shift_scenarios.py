@@ -96,6 +96,7 @@ def build_invariant_variants(
     axis: str,
     registry: dict[str, Any],
     registry_sha256: str,
+    eligible_parent_splits: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     if axis not in GENERATORS:
         raise ValueError(f"axis must be one of {sorted(GENERATORS)}")
@@ -105,6 +106,8 @@ def build_invariant_variants(
     transformed_groups: set[str] = set()
 
     for parent in parsed:
+        if eligible_parent_splits and parent["protocol_split"] not in eligible_parent_splits:
+            continue
         parent_metadata = parent.get("metadata") or {}
         parent_falsification = validate_falsification_metadata(
             parent_metadata.get("falsification"),
@@ -244,6 +247,7 @@ def main() -> None:
         axis=args.axis,
         registry=registry,
         registry_sha256=registry_sha256,
+        eligible_parent_splits={"test"},
     )
     _write_jsonl(Path(args.output), rows)
     print(f"saved {len(rows)} base and deterministic shifted scenarios to {args.output}")

@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import time
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
@@ -540,9 +543,55 @@ class TaskActivationExtractor:
         }
         return result, metadata
 
-    def extract_split(self, examples: Iterable[TaskExample], split_name: str) -> None:
-        outdir = Path(self.cfg.output_dir)
-        outdir.mkdir(parents=True, exist_ok=True)
+    @staticmethod
+    def _atomic_save_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("wb") as handle:
+            np.savez_compressed(handle, **arrays)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+
+    @staticmethod
+    def _atomic_save_json(path: Path, payload: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+
+    def _extraction_config_sha256(self, wanted_views: list[str]) -> str:
+        payload = {
+            "model_name": self.cfg.model_name,
+            "model_revision": self.cfg.model_revision,
+            "tokenizer_revision": self.cfg.tokenizer_revision,
+            "layers": self.cfg.layers,
+            "max_length": self.cfg.max_length,
+            "allow_truncation": self.cfg.allow_truncation,
+            "pooling_mode": self.cfg.pooling_mode,
+            "views": wanted_views,
+            "trajectory_prefix_percentiles": self.cfg.trajectory_prefix_percentiles,
+            "trajectory_basis": (
+                TRAJECTORY_BASIS
+                if self.cfg.trajectory_prefix_percentiles
+                else None
+            ),
+            "use_chat_template": self.cfg.use_chat_template,
+            "missing_view_policy": self.cfg.missing_view_policy,
+            "require_model_generated": self.cfg.require_model_generated,
+            "split_seed": self.cfg.split_seed,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _extract_chunk_arrays(
+        self, examples: list[TaskExample], split_name: str
+    ) -> tuple[dict[int, dict[str, np.ndarray]], list[str]]:
         buffers: Dict[int, Dict[str, list[np.ndarray]]] = {
             layer: {} for layer in self.cfg.layers
         }
@@ -592,9 +641,10 @@ class TaskActivationExtractor:
                     buffers[layer].setdefault(view_name, []).append(vector)
 
         if not labels:
-            raise ValueError(f"No extractable examples remained for split {split_name}")
+            return {}, dropped_ids
         # Recompute to avoid assuming all examples share identical trajectory views.
         wanted_views = self._requested_output_views(int(np.max(token_counts)) if token_counts else 1)
+        layer_arrays: dict[int, dict[str, np.ndarray]] = {}
         for layer, view_map in buffers.items():
             for view in wanted_views:
                 if len(view_map.get(view, [])) != len(labels):
@@ -652,31 +702,233 @@ class TaskActivationExtractor:
             arrays["code_dirty"] = np.asarray(self.cfg.code_dirty)
             arrays["split_seed"] = np.asarray(self.cfg.split_seed)
             arrays["extraction_config_sha256"] = np.asarray(
-                hashlib.sha256(
-                    json.dumps(
-                        {
-                            "model_name": self.cfg.model_name,
-                            "model_revision": self.cfg.model_revision,
-                            "tokenizer_revision": self.cfg.tokenizer_revision,
-                            "layers": self.cfg.layers,
-                            "max_length": self.cfg.max_length,
-                            "allow_truncation": self.cfg.allow_truncation,
-                            "pooling_mode": self.cfg.pooling_mode,
-                            "views": wanted_views,
-                            "trajectory_prefix_percentiles": self.cfg.trajectory_prefix_percentiles,
-                            "trajectory_basis": (
-                                TRAJECTORY_BASIS
-                                if self.cfg.trajectory_prefix_percentiles
-                                else None
-                            ),
-                            "use_chat_template": self.cfg.use_chat_template,
-                            "missing_view_policy": self.cfg.missing_view_policy,
-                            "require_model_generated": self.cfg.require_model_generated,
-                            "split_seed": self.cfg.split_seed,
-                        },
-                        sort_keys=True,
-                    ).encode("utf-8")
-                ).hexdigest()
+                self._extraction_config_sha256(wanted_views)
             )
             arrays["dropped_example_ids"] = np.asarray("\n".join(dropped_ids))
-            np.savez_compressed(outdir / f"{split_name}_layer{layer}.npz", **arrays)
+            layer_arrays[layer] = arrays
+        return layer_arrays, dropped_ids
+
+    @staticmethod
+    def _checkpoint_marker_matches(
+        marker_path: Path,
+        *,
+        input_example_ids: list[str],
+        checkpoint_identity: dict[str, object],
+        layer_paths: list[Path],
+    ) -> bool:
+        if not marker_path.exists():
+            return False
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if (
+            marker.get("schema_version") != "task-activation-checkpoint-v1"
+            or marker.get("input_example_ids") != input_example_ids
+            or marker.get("checkpoint_identity") != checkpoint_identity
+        ):
+            return False
+        emitted_count = int(marker.get("emitted_count", -1))
+        return emitted_count == 0 or (
+            emitted_count > 0 and all(path.exists() for path in layer_paths)
+        )
+
+    def _completed_split_matches(
+        self, examples: list[TaskExample], split_name: str
+    ) -> bool:
+        paths = [
+            Path(self.cfg.output_dir) / f"{split_name}_layer{layer}.npz"
+            for layer in self.cfg.layers
+        ]
+        if not all(path.exists() for path in paths):
+            return False
+        expected_ids = {example.example_id for example in examples}
+        expected_views = self._requested_output_views(1)
+        expected_scalars = {
+            "model_name": self.cfg.model_name,
+            "model_revision": self.cfg.model_revision or "unpinned",
+            "tokenizer_revision": (
+                self.cfg.tokenizer_revision
+                or self.cfg.model_revision
+                or "unpinned"
+            ),
+            "pooling_mode": self.cfg.pooling_mode,
+            "requested_views_json": json.dumps(expected_views, sort_keys=True),
+            "chat_template_used": self.cfg.use_chat_template,
+            "chat_template_sha256": self.chat_template_sha256 or "none",
+            "max_length": self.cfg.max_length,
+            "allow_truncation": self.cfg.allow_truncation,
+            "missing_view_policy": self.cfg.missing_view_policy,
+            "require_model_generated": self.cfg.require_model_generated,
+            "dataset_sha256": self.cfg.dataset_sha256 or "unknown",
+            "code_revision": self.cfg.code_revision or "unknown",
+            "code_dirty": self.cfg.code_dirty,
+            "split_seed": self.cfg.split_seed,
+            "extraction_config_sha256": self._extraction_config_sha256(
+                expected_views
+            ),
+        }
+        shared_emitted_ids: list[str] | None = None
+        shared_dropped_ids: list[str] | None = None
+        try:
+            for path in paths:
+                with np.load(path, allow_pickle=False) as bundle:
+                    for key, expected in expected_scalars.items():
+                        if key not in bundle or bundle[key].ndim != 0:
+                            return False
+                        if bundle[key].item() != expected:
+                            return False
+                    emitted_ids = np.asarray(bundle["example_ids"]).astype(str).tolist()
+                    dropped_ids = [
+                        value
+                        for value in str(bundle["dropped_example_ids"].item()).splitlines()
+                        if value
+                    ]
+                if shared_emitted_ids is None:
+                    shared_emitted_ids = emitted_ids
+                    shared_dropped_ids = dropped_ids
+                elif (
+                    emitted_ids != shared_emitted_ids
+                    or dropped_ids != shared_dropped_ids
+                ):
+                    return False
+        except (OSError, KeyError, ValueError):
+            return False
+        observed_ids = set((shared_emitted_ids or []) + (shared_dropped_ids or []))
+        return observed_ids == expected_ids
+
+    def _merge_checkpoints(
+        self,
+        *,
+        checkpoint_dir: Path,
+        markers: list[dict[str, object]],
+        split_name: str,
+    ) -> None:
+        dropped_ids = [
+            str(example_id)
+            for marker in markers
+            for example_id in marker["dropped_example_ids"]
+        ]
+        emitted_markers = [marker for marker in markers if marker["emitted_count"]]
+        if not emitted_markers:
+            raise ValueError(f"No extractable examples remained for split {split_name}")
+
+        for layer in self.cfg.layers:
+            row_arrays: dict[str, list[np.ndarray]] = {}
+            scalar_arrays: dict[str, np.ndarray] | None = None
+            for marker in emitted_markers:
+                chunk_index = int(marker["chunk_index"])
+                shard_path = checkpoint_dir / f"chunk_{chunk_index:06d}_layer{layer}.npz"
+                with np.load(shard_path, allow_pickle=False) as bundle:
+                    shard = {key: np.asarray(bundle[key]) for key in bundle.files}
+                shard_scalars = {
+                    key: value
+                    for key, value in shard.items()
+                    if value.ndim == 0 and key != "dropped_example_ids"
+                }
+                if scalar_arrays is None:
+                    scalar_arrays = shard_scalars
+                elif any(
+                    key not in shard_scalars
+                    or not np.array_equal(value, shard_scalars[key])
+                    for key, value in scalar_arrays.items()
+                ):
+                    raise ValueError(
+                        f"Incompatible activation checkpoint metadata for {split_name} layer {layer}"
+                    )
+                for key, value in shard.items():
+                    if value.ndim > 0:
+                        row_arrays.setdefault(key, []).append(value)
+            assert scalar_arrays is not None
+            arrays = {
+                key: np.concatenate(values, axis=0)
+                for key, values in row_arrays.items()
+            }
+            arrays.update(scalar_arrays)
+            arrays["dropped_example_ids"] = np.asarray("\n".join(dropped_ids))
+            self._atomic_save_npz(
+                Path(self.cfg.output_dir) / f"{split_name}_layer{layer}.npz",
+                arrays,
+            )
+
+    def extract_split(
+        self,
+        examples: Iterable[TaskExample],
+        split_name: str,
+        *,
+        checkpoint_examples: int = 32,
+        resume: bool = True,
+        deadline_monotonic: float | None = None,
+    ) -> bool:
+        if checkpoint_examples < 1:
+            raise ValueError("checkpoint_examples must be positive")
+        example_list = list(examples)
+        if resume and self._completed_split_matches(example_list, split_name):
+            return True
+
+        outdir = Path(self.cfg.output_dir)
+        outdir.mkdir(parents=True, exist_ok=True)
+        checkpoint_dir = outdir / ".checkpoints" / split_name
+        checkpoint_identity: dict[str, object] = {
+            "dataset_sha256": self.cfg.dataset_sha256 or "unknown",
+            "code_revision": self.cfg.code_revision or "unknown",
+            "code_dirty": self.cfg.code_dirty,
+            "extraction_config_sha256": self._extraction_config_sha256(
+                self._requested_output_views(1)
+            ),
+            "chat_template_sha256": self.chat_template_sha256 or "none",
+            "resolved_device": self.resolved_device,
+            "model_parameter_device": self.model_parameter_device,
+            "model_parameter_dtype": self.model_parameter_dtype,
+        }
+        markers: list[dict[str, object]] = []
+        for chunk_index, start in enumerate(
+            range(0, len(example_list), checkpoint_examples)
+        ):
+            chunk = example_list[start : start + checkpoint_examples]
+            input_ids = [example.example_id for example in chunk]
+            marker_path = checkpoint_dir / f"chunk_{chunk_index:06d}.json"
+            layer_paths = [
+                checkpoint_dir / f"chunk_{chunk_index:06d}_layer{layer}.npz"
+                for layer in self.cfg.layers
+            ]
+            if resume and self._checkpoint_marker_matches(
+                marker_path,
+                input_example_ids=input_ids,
+                checkpoint_identity=checkpoint_identity,
+                layer_paths=layer_paths,
+            ):
+                markers.append(json.loads(marker_path.read_text(encoding="utf-8")))
+                continue
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                return False
+
+            layer_arrays, dropped_ids = self._extract_chunk_arrays(chunk, split_name)
+            for layer, arrays in layer_arrays.items():
+                self._atomic_save_npz(
+                    checkpoint_dir / f"chunk_{chunk_index:06d}_layer{layer}.npz",
+                    arrays,
+                )
+            emitted_count = (
+                len(next(iter(layer_arrays.values()))["labels"])
+                if layer_arrays
+                else 0
+            )
+            marker = {
+                "schema_version": "task-activation-checkpoint-v1",
+                "chunk_index": chunk_index,
+                "input_example_ids": input_ids,
+                "checkpoint_identity": checkpoint_identity,
+                "emitted_count": emitted_count,
+                "dropped_example_ids": dropped_ids,
+            }
+            self._atomic_save_json(marker_path, marker)
+            markers.append(marker)
+
+        self._merge_checkpoints(
+            checkpoint_dir=checkpoint_dir,
+            markers=markers,
+            split_name=split_name,
+        )
+        shutil.rmtree(checkpoint_dir, ignore_errors=True)
+        return True
